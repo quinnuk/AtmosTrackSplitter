@@ -8,7 +8,7 @@
 ![Python](https://img.shields.io/badge/python-3.10%2B-3776AB)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-[![Atmos Track Splitter Screenshot](https://github.com/quinnuk/AtmosTrackSplitter/raw/master/screenshot.png)](/quinnuk/AtmosTrackSplitter/blob/master/screenshot.png)
+[![Atmos Track Splitter Screenshot](https://github.com/quinnuk/AtmosTrackSplitter/raw/main/screenshot.png)](/quinnuk/AtmosTrackSplitter/blob/main/screenshot.png)
 
 <a href="https://buymeacoffee.com/quinnuk" target="_blank">
   <img src="https://cdn.buymeacoffee.com/buttons/default-orange.png" alt="Buy Me A Coffee" height="60" width="217">
@@ -102,12 +102,23 @@ AtmosTrackSplitter/
 ├── main.py                    GUI (customtkinter)
 ├── extractor.py                Core logic: scanning, extraction, chapters, splitting
 ├── settings.py                 Persisted settings (tool paths, last-used folders)
+├── split_now.py                 CLI: split an already-extracted Atmos MKV by hand
 ├── AtmosTrackSplitter.spec     PyInstaller build spec
 ├── build_exe.bat               One-click .exe build script
 └── requirements.txt
 ```
 
 `extractor.py` has no GUI dependencies, so it can be imported and used on its own (e.g. from a script or a future CLI).
+
+### Recovering from an interrupted run
+
+If extraction succeeds but the app is closed or crashes before splitting finishes, the intermediate `_atmos_extracted.mkv` is left in the work folder instead of being cleaned up. Rather than re-running the (slow) extraction step again, split that file directly:
+
+```bash
+python split_now.py "path\to\_atmos_extracted.mkv" "path\to\output folder" --names-file tracks.txt
+```
+
+`tracks.txt` is just one track name per line, in chapter order — the same tracklist you'd paste into the GUI. Leading numbering (`1.`, `01 -`) is stripped automatically. Add `--list-only` (and skip `--names-file`) to just see how many chapters a file has before committing to names.
 
 ## Notes & known limitations
 
