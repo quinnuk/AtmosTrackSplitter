@@ -83,11 +83,39 @@ TOOL_PATHS = {
     "ffprobe": "ffprobe",
 }
 
+# Where to point people if a required tool isn't found. mkvmerge/mkvextract
+# both ship in the same MKVToolNix install; ffmpeg/ffprobe both ship in the
+# same ffmpeg download.
+TOOL_DOWNLOAD_URLS = {
+    "mkvmerge": "https://mkvtoolnix.download/downloads.html",
+    "mkvextract": "https://mkvtoolnix.download/downloads.html",
+    "ffmpeg": "https://ffmpeg.org/download.html",
+    "ffprobe": "https://ffmpeg.org/download.html",
+}
+
 
 def set_tool_path(tool: str, path: str) -> None:
     if tool not in TOOL_PATHS:
         raise KeyError(f"Unknown tool '{tool}'")
     TOOL_PATHS[tool] = path
+
+
+def check_tools() -> dict[str, bool]:
+    """
+    Check whether each configured tool is actually runnable: found on PATH
+    if it's a bare command name (e.g. "mkvmerge"), or exists at that exact
+    location if it's been set to a specific file path.
+
+    Returns {tool_name: True/False}.
+    """
+    found: dict[str, bool] = {}
+    for name, configured_path in TOOL_PATHS.items():
+        looks_like_path = "/" in configured_path or "\\" in configured_path
+        if looks_like_path:
+            found[name] = Path(configured_path).is_file()
+        else:
+            found[name] = shutil.which(configured_path) is not None
+    return found
 
 
 def _run(args: list[str], timeout: Optional[float] = None) -> subprocess.CompletedProcess:

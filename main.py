@@ -18,6 +18,7 @@ import threading
 import tkinter as tk
 import tkinter.filedialog as filedialog
 import tkinter.messagebox as messagebox
+import webbrowser
 from pathlib import Path
 
 import customtkinter as ctk
@@ -126,7 +127,68 @@ class AtmosTrackSplitterApp(ctk.CTk):
         self.selected_playlist: extractor.Playlist | None = None
         self.chapter_name_vars: dict[int, ctk.StringVar] = {}
 
+        self._apply_tool_paths()
         self._build_layout()
+        self.after(200, self._check_tools_on_startup)
+
+    def _apply_tool_paths(self) -> None:
+        """
+        Push any custom tool paths from settings.json into extractor.py.
+        Without this, a custom mkvmerge_path/ffmpeg_path etc set in settings
+        would be silently ignored and the bare command name used instead.
+        """
+        extractor.set_tool_path("mkvmerge", self.cfg.get("mkvmerge_path", "mkvmerge"))
+        extractor.set_tool_path("mkvextract", self.cfg.get("mkvextract_path", "mkvextract"))
+        extractor.set_tool_path("ffmpeg", self.cfg.get("ffmpeg_path", "ffmpeg"))
+        extractor.set_tool_path("ffprobe", self.cfg.get("ffprobe_path", "ffprobe"))
+
+    def _check_tools_on_startup(self) -> None:
+        found = extractor.check_tools()
+        missing = [name for name, ok in found.items() if not ok]
+        if missing:
+            self._show_missing_tools_dialog(missing)
+
+    def _show_missing_tools_dialog(self, missing: list[str]) -> None:
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Missing required tools")
+        dialog.geometry("460x300")
+        dialog.transient(self)
+        dialog.grab_set()
+
+        ctk.CTkLabel(
+            dialog,
+            text="These required tools weren't found on your PATH:",
+            font=ctk.CTkFont(weight="bold"),
+            wraplength=420,
+            justify="left",
+        ).pack(padx=16, pady=(16, 8), anchor="w")
+
+        for name in missing:
+            row = ctk.CTkFrame(dialog, fg_color="transparent")
+            row.pack(fill="x", padx=16, pady=4)
+            ctk.CTkLabel(row, text=f"•  {name}", width=120, anchor="w").pack(side="left")
+            url = extractor.TOOL_DOWNLOAD_URLS.get(name, "")
+            ctk.CTkButton(
+                row,
+                text="Download",
+                width=100,
+                command=lambda u=url: webbrowser.open(u),
+            ).pack(side="left")
+
+        ctk.CTkLabel(
+            dialog,
+            text=(
+                "Install these and make sure they're on your system PATH, then "
+                "restart the app. If they're already installed somewhere else, "
+                "set the exact path in settings.json instead."
+            ),
+            wraplength=420,
+            justify="left",
+        ).pack(padx=16, pady=(8, 16), anchor="w")
+
+        ctk.CTkButton(dialog, text="Continue anyway", command=dialog.destroy).pack(
+            pady=(0, 16)
+        )
 
     # ------------------------------------------------------------------
     # Layout

@@ -8,7 +8,7 @@
 ![Python](https://img.shields.io/badge/python-3.10%2B-3776AB)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-[![Atmos Track Splitter Screenshot](https://github.com/quinnuk/AtmosTrackSplitter/raw/main/screenshot.png)](/quinnuk/AtmosTrackSplitter/blob/main/screenshot.png)
+[![Atmos Track Splitter Screenshot](https://github.com/quinnuk/AtmosTrackSplitter/raw/main/screenshot.png)](https://github.com/quinnuk/AtmosTrackSplitter/blob/main/screenshot.png)
 
 <a href="https://buymeacoffee.com/quinnuk" target="_blank">
   <img src="https://cdn.buymeacoffee.com/buttons/default-orange.png" alt="Buy Me A Coffee" height="60" width="217">
@@ -47,6 +47,7 @@ Atmos Track Splitter automates the whole thing: point it at the ripped disc fold
 ## Features
 
 - 🔍 **Auto-detects the Atmos track** — scans every `.mpls` playlist with `mkvmerge -i` and picks the one with a `TrueHD Atmos` track and the most chapters
+- ⚠️ **Checks for MKVToolNix/ffmpeg on startup** — if either is missing from your PATH, you get a dialog with direct download links instead of a confusing failure mid-extraction
 - ✂️ **No re-encoding** — stream-copies video + Atmos audio only; the object-based Atmos mix stays bit-exact
 - 📺 **Keeps the video track** — so playback on a TV shows the concert, not a black screen
 - 📝 **Fast track naming** — paste a whole tracklist at once and it fills every chapter field in order (strips leading `1.`, `01 -`, etc.)

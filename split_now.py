@@ -96,6 +96,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
 
+    missing = [name for name, ok in extractor.check_tools().items() if not ok]
+    if missing:
+        print("Warning: the following required tools were not found on PATH:", file=sys.stderr)
+        for name in missing:
+            url = extractor.TOOL_DOWNLOAD_URLS.get(name, "")
+            print(f"  - {name}  ({url})", file=sys.stderr)
+        print("Continuing anyway - this will fail if they're actually needed.\n", file=sys.stderr)
+
     if not args.atmos_mkv.is_file():
         print(f"Error: {args.atmos_mkv} does not exist.", file=sys.stderr)
         return 1
