@@ -1,0 +1,37 @@
+name: Build and attach exe
+
+# Runs whenever a release is published on GitHub (Releases -> Draft a new
+# release -> Publish release). Builds AtmosTrackSplitter.exe fresh from
+# the tagged commit and uploads it as a release asset automatically -
+# no need to build locally and drag the file in by hand.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Check out repo at the release tag
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build exe
+        run: python -m PyInstaller --noconfirm --onefile --windowed --icon=atmos_ripper.ico --name AtmosTrackSplitter main.py
+
+      - name: Upload exe to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/AtmosTrackSplitter.exe
