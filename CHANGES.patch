@@ -1,0 +1,1031 @@
+diff --git a/extractor.py b/extractor.py
+index 8f9ea64..7379fcd 100644
+--- a/extractor.py
++++ b/extractor.py
+@@ -15,9 +15,12 @@ imported by main.py.
+ 
+ from __future__ import annotations
+ 
++import json
++import os
+ import re
+ import shutil
+ import subprocess
++import uuid
+ import xml.etree.ElementTree as ET
+ from dataclasses import dataclass, field
+ from pathlib import Path
+@@ -31,8 +34,12 @@ from typing import Callable, Optional
+ @dataclass
+ class Track:
+     track_id: int
+-    kind: str          # "video" | "audio" | "subtitles"
+-    codec: str          # raw string from mkvmerge, e.g. "TrueHD Atmos"
++    kind: str           # "video" | "audio" | "subtitles"
++    codec: str           # human-readable codec string from mkvmerge JSON, e.g. "TrueHD Atmos"
++    codec_id: str = ""   # internal codec id, e.g. "A_TRUEHD", "V_MPEG4/ISO/AVC"
++    language: str = ""   # ISO 639-2 code, e.g. "eng" - empty if not set on the track
++    channels: Optional[int] = None   # audio channel count, None for non-audio tracks
++    title: str = ""       # track name/title embedded in the container, if any
+ 
+     @property
+     def is_atmos(self) -> bool:
+@@ -44,6 +51,7 @@ class Playlist:
+     path: Path
+     tracks: list[Track] = field(default_factory=list)
+     chapter_count: int = 0
++    duration_seconds: float = 0.0
+ 
+     @property
+     def atmos_track(self) -> Optional[Track]:
+@@ -69,7 +77,9 @@ class Chapter:
+     index: int
+     start_seconds: float
+     end_seconds: Optional[float] = None   # filled in after all chapters read
+-    name: str = ""                        # user-assigned song title
++    name: str = ""                        # final song title used for the output filename
++    embedded_name: str = ""               # ChapterString read from the source, if any
++    language: str = ""                    # ChapterLanguage of the embedded name, if any
+ 
+ 
+ # ---------------------------------------------------------------------------
+@@ -102,19 +112,28 @@ def set_tool_path(tool: str, path: str) -> None:
+ 
+ def check_tools() -> dict[str, bool]:
+     """
+-    Check whether each configured tool is actually runnable: found on PATH
+-    if it's a bare command name (e.g. "mkvmerge"), or exists at that exact
+-    location if it's been set to a specific file path.
++    Check whether each configured tool is actually runnable by invoking
++    `<tool> --version`, rather than merely checking that a file exists at
++    the configured path or that something by that name is on PATH.
++    Existence alone doesn't prove much: a stale/broken shim, a
++    wrong-architecture binary, a permissions problem, or an unrelated file
++    that happens to share the name would all pass a mere existence check
++    but fail here - and fail here in the same way they'd fail when the
++    app actually tries to use them, so problems surface at startup
++    instead of mid-extraction.
+ 
+     Returns {tool_name: True/False}.
+     """
+     found: dict[str, bool] = {}
+     for name, configured_path in TOOL_PATHS.items():
+-        looks_like_path = "/" in configured_path or "\\" in configured_path
+-        if looks_like_path:
+-            found[name] = Path(configured_path).is_file()
+-        else:
+-            found[name] = shutil.which(configured_path) is not None
++        try:
++            result = _run([configured_path, "--version"], timeout=10)
++            found[name] = result.returncode == 0
++        except (FileNotFoundError, OSError, RuntimeError):
++            # FileNotFoundError/OSError: nothing runnable at that path/name.
++            # RuntimeError: _run's own timeout wrapper - a tool that hangs
++            # on --version isn't usable either.
++            found[name] = False
+     return found
+ 
+ 
+@@ -160,11 +179,6 @@ def _run(args: list[str], timeout: Optional[float] = None) -> subprocess.Complet
+ # Disc / folder scanning
+ # ---------------------------------------------------------------------------
+ 
+-_TRACK_LINE_RE = re.compile(
+-    r"Track ID (\d+): (video|audio|subtitles) \((.+)\)"
+-)
+-_CHAPTERS_LINE_RE = re.compile(r"Chapters: (\d+) entries")
+-
+ 
+ def find_playlists(disc_folder: Path) -> list[Path]:
+     """Find .mpls playlist files under BDMV/PLAYLIST (ignores BACKUP)."""
+@@ -175,28 +189,64 @@ def find_playlists(disc_folder: Path) -> list[Path]:
+ 
+ 
+ def inspect_playlist(playlist_path: Path) -> Playlist:
+-    """Run `mkvmerge -i` on a playlist and parse tracks + chapter count."""
+-    result = _run([TOOL_PATHS["mkvmerge"], "-i", str(playlist_path)], timeout=60)
+-    # mkvmerge -i returns 0 for a clean read and 1 for warnings (still
+-    # usable output), but 2 means it couldn't read the file at all - in
+-    # that case stdout won't have useful track/chapter info, so surface
+-    # the real error instead of silently reporting "no Atmos track".
++    """
++    Run `mkvmerge -J` on a playlist and parse the resulting JSON for
++    tracks and chapter count.
++
++    JSON (rather than the human-readable `mkvmerge -i` text output) is
++    used deliberately: the text format isn't a stable interface - its
++    wording, spacing, and line layout can shift between MKVToolNix
++    versions or with locale settings, which is exactly the kind of thing
++    that quietly breaks a regex without any obvious error. The JSON
++    schema is the format MKVToolNix documents and maintains for tooling.
++    """
++    result = _run([TOOL_PATHS["mkvmerge"], "-J", str(playlist_path)], timeout=60)
++    # mkvmerge returns 0 for a clean read and 1 for warnings (still usable
++    # output), but 2 means it couldn't read the file at all - in that case
++    # stdout won't have useful track/chapter info, so surface the real
++    # error instead of silently reporting "no Atmos track".
+     if result.returncode >= 2:
+         raise RuntimeError(
+             f"mkvmerge could not read {playlist_path.name}:\n{result.stderr or result.stdout}"
+         )
++
++    try:
++        data = json.loads(result.stdout)
++    except json.JSONDecodeError as exc:
++        raise RuntimeError(
++            f"mkvmerge produced output that wasn't valid JSON for "
++            f"{playlist_path.name}: {exc}\n"
++            f"First 2000 chars of output:\n{result.stdout[:2000]}"
++        ) from exc
++
+     pl = Playlist(path=playlist_path)
+ 
+-    for line in result.stdout.splitlines():
+-        m = _TRACK_LINE_RE.search(line)
+-        if m:
+-            pl.tracks.append(
+-                Track(track_id=int(m.group(1)), kind=m.group(2), codec=m.group(3))
++    for t in data.get("tracks", []):
++        props = t.get("properties") or {}
++        track_id = t.get("id")
++        if track_id is None:
++            continue  # malformed entry - skip rather than crash on a bad track_id
++        pl.tracks.append(
++            Track(
++                track_id=track_id,
++                kind=t.get("type", ""),
++                codec=t.get("codec", ""),
++                codec_id=props.get("codec_id", "") or "",
++                language=props.get("language", "") or "",
++                channels=props.get("audio_channels"),
++                title=props.get("track_name", "") or "",
+             )
+-            continue
+-        m = _CHAPTERS_LINE_RE.search(line)
+-        if m:
+-            pl.chapter_count = int(m.group(1))
++        )
++
++    chapters = data.get("chapters") or []
++    if chapters:
++        # mkvmerge -J groups chapters into one "edition"; a Blu-ray
++        # playlist normally has exactly one, so take the first.
++        pl.chapter_count = chapters[0].get("num_entries", 0)
++
++    duration_ns = ((data.get("container") or {}).get("properties") or {}).get("duration")
++    if duration_ns:
++        pl.duration_seconds = duration_ns / 1_000_000_000
+ 
+     return pl
+ 
+@@ -206,12 +256,138 @@ def scan_disc_folder(disc_folder: Path) -> list[Playlist]:
+     return [inspect_playlist(p) for p in find_playlists(disc_folder)]
+ 
+ 
++# ---------------------------------------------------------------------------
++# Playlist scoring
++# ---------------------------------------------------------------------------
++
++@dataclass
++class PlaylistScore:
++    playlist: Playlist
++    score: float
++    reasons: list[str] = field(default_factory=list)
++    duplicate_of: Optional[Path] = None  # set if this looks like a duplicate/alternate angle of a higher-scored playlist
++
++
++def score_playlists(
++    playlists: list[Playlist],
++    expected_chapter_count: Optional[int] = None,
++    expected_duration_seconds: Optional[float] = None,
++) -> list[PlaylistScore]:
++    """
++    Score every scanned playlist as a candidate for "the" Atmos concert
++    feature, replacing the old heuristic of silently picking whichever
++    Atmos playlist happened to have the most chapters. Returns
++    PlaylistScore objects sorted highest-score first, each carrying the
++    reasons behind its score so the UI can show its work and the user can
++    confirm (or override) the pick, instead of a single silent choice.
++
++    expected_chapter_count / expected_duration_seconds: optional values
++    from an external source (e.g. a user-imported tracklist). When given,
++    playlists matching them closely get a bonus. Both are unused for now -
++    they exist so a future tracklist-import feature can feed into playlist
++    selection without changing this function's shape.
++    """
++    scored: list[PlaylistScore] = []
++
++    for pl in playlists:
++        score = 0.0
++        reasons: list[str] = []
++
++        if pl.has_atmos:
++            score += 100
++            atmos = pl.atmos_track
++            reasons.append(f"Has a Dolby Atmos/TrueHD track (ID {atmos.track_id})")
++        else:
++            reasons.append("No Atmos/TrueHD track - very unlikely to be the right playlist")
++
++        if pl.chapter_count > 0:
++            score += min(pl.chapter_count * 2, 40)
++            reasons.append(f"{pl.chapter_count} chapters")
++        else:
++            reasons.append("No chapters - can't be split into songs even if selected")
++
++        if pl.video_track is not None:
++            score += 10
++            reasons.append(f"Includes a video track ({pl.video_track.codec})")
++        else:
++            reasons.append("No video track - audio-only playlist")
++
++        if pl.duration_seconds > 0:
++            minutes = pl.duration_seconds / 60
++            # A real concert feature usually runs from roughly 20 minutes
++            # to a few hours. Duration mainly helps rule out menus,
++            # trailers, and short bonus clips rather than reward length
++            # for its own sake, so this is capped and lightly weighted
++            # rather than dominating the score.
++            score += min(minutes, 180) * 0.15
++            reasons.append(f"Runs {minutes:.0f} minutes")
++
++        # Playlist number is a weak signal - naming conventions vary by
++        # studio/authoring tool - so it only nudges close ties, never
++        # dominates the score on its own.
++        try:
++            score -= int(pl.path.stem) * 0.01
++        except ValueError:
++            pass
++
++        if expected_chapter_count is not None and pl.chapter_count == expected_chapter_count:
++            score += 15
++            reasons.append(f"Chapter count matches the expected tracklist ({expected_chapter_count})")
++
++        if expected_duration_seconds is not None and pl.duration_seconds > 0:
++            if abs(pl.duration_seconds - expected_duration_seconds) < 30:
++                score += 15
++                reasons.append("Duration matches the expected tracklist closely")
++
++        scored.append(PlaylistScore(playlist=pl, score=score, reasons=reasons))
++
++    _flag_duplicate_angles(scored)
++
++    scored.sort(key=lambda s: s.score, reverse=True)
++    return scored
++
++
++def _flag_duplicate_angles(scored: list[PlaylistScore]) -> None:
++    """
++    Blu-rays sometimes expose the same underlying content as several
++    playlists - alternate angles, region variants, a "clean" vs
++    "with-recap" cut. These share duration, chapter count, and track
++    layout almost exactly, so group candidates by that signature and mark
++    every playlist but the highest-scored one in each group as a likely
++    duplicate, rather than presenting near-identical entries as separate
++    top candidates.
++    """
++    def signature(pl: Playlist) -> tuple:
++        track_sig = tuple(sorted((t.kind, t.codec) for t in pl.tracks))
++        return (pl.chapter_count, round(pl.duration_seconds), track_sig)
++
++    groups: dict[tuple, list[PlaylistScore]] = {}
++    for s in scored:
++        groups.setdefault(signature(s.playlist), []).append(s)
++
++    for group in groups.values():
++        if len(group) < 2:
++            continue
++        group.sort(key=lambda s: s.score, reverse=True)
++        primary = group[0]
++        for dup in group[1:]:
++            dup.duplicate_of = primary.playlist.path
++            dup.score -= 50
++            dup.reasons.append(
++                f"Same duration/chapters/tracks as {primary.playlist.path.name} "
++                f"- likely a duplicate or alternate angle"
++            )
++
++
+ def find_best_atmos_playlist(playlists: list[Playlist]) -> Optional[Playlist]:
+-    """Heuristic: prefer the Atmos playlist with the most chapters."""
+-    candidates = [p for p in playlists if p.has_atmos]
+-    if not candidates:
+-        return None
+-    return max(candidates, key=lambda p: p.chapter_count)
++    """
++    Deprecated - kept only for backwards compatibility with any external
++    scripts built against the old API. Prefer score_playlists(), which
++    exposes the reasoning behind the pick and every other candidate
++    instead of returning a single silent choice.
++    """
++    scored = [s for s in score_playlists(playlists) if s.playlist.has_atmos]
++    return scored[0].playlist if scored else None
+ 
+ 
+ # ---------------------------------------------------------------------------
+@@ -272,8 +448,18 @@ def _timecode_to_seconds(tc: str) -> float:
+     return int(h) * 3600 + int(mnt) * 60 + float(s)
+ 
+ 
+-def read_chapters(mkv_path: Path) -> list[Chapter]:
+-    """Extract chapter markers from an MKV via `mkvextract chapters -`."""
++def read_chapters(mkv_path: Path, preferred_language: str = "eng") -> list[Chapter]:
++    """
++    Extract chapter markers from an MKV (or any mkvextract-readable
++    source, including a Blu-ray .mpls playlist directly) via
++    `mkvextract chapters -`.
++
++    Also reads each chapter's embedded name, if the source has one: a
++    ChapterAtom can carry multiple <ChapterDisplay> blocks (one per
++    language) via <ChapterString>/<ChapterLanguage> - when there's more
++    than one, the one matching preferred_language is used, falling back
++    to the first display block present.
++    """
+     result = _run([TOOL_PATHS["mkvextract"], str(mkv_path), "chapters", "-"], timeout=60)
+     if result.returncode != 0:
+         raise RuntimeError(f"mkvextract failed:\n{result.stderr}")
+@@ -293,8 +479,16 @@ def read_chapters(mkv_path: Path) -> list[Chapter]:
+         start_el = atom.find("ChapterTimeStart")
+         if start_el is None or start_el.text is None:
+             continue
++
++        embedded_name, language = _pick_chapter_display(atom, preferred_language)
++
+         chapters.append(
+-            Chapter(index=i, start_seconds=_timecode_to_seconds(start_el.text))
++            Chapter(
++                index=i,
++                start_seconds=_timecode_to_seconds(start_el.text),
++                embedded_name=embedded_name,
++                language=language,
++            )
+         )
+ 
+     # Fill in end times from the next chapter's start.
+@@ -307,6 +501,40 @@ def read_chapters(mkv_path: Path) -> list[Chapter]:
+     return chapters
+ 
+ 
++def _pick_chapter_display(atom: ET.Element, preferred_language: str) -> tuple[str, str]:
++    """
++    A ChapterAtom can have several <ChapterDisplay> blocks (e.g. one per
++    language track on the disc). Prefer the one whose <ChapterLanguage>
++    matches preferred_language; otherwise use the first display block
++    present. Returns (name, language), both "" if there's no display
++    block or no <ChapterString> text at all.
++    """
++    displays = atom.findall("ChapterDisplay")
++    if not displays:
++        return "", ""
++
++    def display_name_lang(display: ET.Element) -> tuple[str, str]:
++        string_el = display.find("ChapterString")
++        lang_el = display.find("ChapterLanguage")
++        name = (string_el.text or "").strip() if string_el is not None else ""
++        language = (lang_el.text or "").strip() if lang_el is not None else ""
++        return name, language
++
++    for display in displays:
++        name, language = display_name_lang(display)
++        if language == preferred_language and name:
++            return name, language
++
++    # No match for preferred_language (or none of them had a name) - fall
++    # back to the first display block that actually has a name.
++    for display in displays:
++        name, language = display_name_lang(display)
++        if name:
++            return name, language
++
++    return "", ""
++
++
+ def probe_duration_seconds(media_path: Path) -> float:
+     """Get total duration of a media file via ffprobe (used for the last chapter)."""
+     args = [
+@@ -329,10 +557,116 @@ def probe_duration_seconds(media_path: Path) -> float:
+ 
+ _INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*]')
+ 
++# Windows reserves these as device names - "CON.mkv" etc silently fails or
++# hits the device instead of creating a file, even though the name looks
++# fine on Linux/macOS where this tool is often developed/tested.
++_WINDOWS_RESERVED_NAMES = {
++    "CON", "PRN", "AUX", "NUL",
++    *(f"COM{i}" for i in range(1, 10)),
++    *(f"LPT{i}" for i in range(1, 10)),
++}
++
+ 
+ def sanitize_filename(name: str) -> str:
+     name = _INVALID_FILENAME_CHARS.sub("", name).strip()
+-    return name or "Untitled"
++    # Windows silently strips trailing dots/spaces from filenames, which
++    # means "Track. " and "Track" collide without ever showing a warning -
++    # strip them ourselves so what we display matches what actually lands
++    # on disk.
++    name = name.rstrip(" .")
++    if not name:
++        name = "Untitled"
++    if name.upper() in _WINDOWS_RESERVED_NAMES:
++        name = f"_{name}"
++    return name
++
++
++@dataclass
++class PlannedOutput:
++    chapter: "Chapter"
++    path: Path
++    exists: bool = False
++    duplicate_name: bool = False  # another chapter sanitises to the same track name
++
++
++def plan_output_files(
++    chapters: list[Chapter],
++    output_folder: Path,
++    container: str = "mkv",
++) -> list[PlannedOutput]:
++    """
++    Compute the final output filename for each chapter without touching
++    the filesystem beyond an existence check.
++
++    Every filename is prefixed with its chapter index ("01 - ...",
++    "02 - ..."), so two chapters can never actually collide with each
++    other on disk even if they share a name - but two chapters sharing a
++    name is usually a sign the tracklist got pasted wrong (e.g. duplicated
++    a line), so those are flagged via duplicate_name for the caller to
++    show as a warning, not silently renamed.
++
++    Separately, each planned path is checked against what's already on
++    disk, so the caller can get user confirmation *before* running the
++    (slow) extraction step, rather than discovering the collision partway
++    through splitting.
++    """
++    name_counts: dict[str, int] = {}
++    for ch in chapters:
++        base = sanitize_filename(ch.name or f"Track {ch.index:02d}").lower()
++        name_counts[base] = name_counts.get(base, 0) + 1
++
++    planned: list[PlannedOutput] = []
++    for ch in chapters:
++        track_name = ch.name or f"Track {ch.index:02d}"
++        base = sanitize_filename(track_name)
++        path = output_folder / f"{ch.index:02d} - {base}.{container}"
++        planned.append(
++            PlannedOutput(
++                chapter=ch,
++                path=path,
++                exists=path.exists(),
++                duplicate_name=name_counts[base.lower()] > 1,
++            )
++        )
++
++    return planned
++
++
++def preflight_check(
++    output_folder: Path,
++    chapter_count: int,
++    track_names: dict[int, str],
++    container: str = "mkv",
++) -> list[PlannedOutput]:
++    """
++    Compute planned output filenames and existence collisions using just
++    the chapter count and the names the user has already typed in -
++    before the slow mkvmerge extraction step even starts. Chapter start
++    times aren't known yet at this point and aren't needed for filename
++    planning, so this uses placeholder timestamps.
++    """
++    fake_chapters = [
++        Chapter(index=i, start_seconds=0.0, name=track_names.get(i, ""))
++        for i in range(1, chapter_count + 1)
++    ]
++    return plan_output_files(fake_chapters, output_folder, container=container)
++
++
++class OutputCollisionError(RuntimeError):
++    """
++    Raised when one or more planned output files already exist on disk and
++    weren't explicitly approved for overwrite. Nothing is ever overwritten
++    silently - the caller (GUI or CLI) must resolve this before splitting
++    can proceed, typically via preflight_check() + user confirmation.
++    """
++
++    def __init__(self, colliding: list[PlannedOutput]):
++        self.colliding = colliding
++        names = ", ".join(p.path.name for p in colliding)
++        super().__init__(
++            f"{len(colliding)} output file(s) already exist and were not "
++            f"approved for overwrite: {names}"
++        )
+ 
+ 
+ _TRAILING_BRACKET_RE = re.compile(r"\s*[\[\(][^\[\]\(\)]*[\]\)]\s*$")
+@@ -363,10 +697,17 @@ def split_chapters(
+     output_folder: Path,
+     container: str = "mkv",
+     progress_cb: Optional[Callable[[str], None]] = None,
++    overwrite: Optional[set[Path]] = None,
+ ) -> list[Path]:
+     """
+     Split the Atmos MKV into one file per chapter using ffmpeg stream-copy
+     (no re-encoding - Atmos must stay bit-exact).
++
++    overwrite: set of specific output paths the caller has already gotten
++    user approval to overwrite (normally via preflight_check() plus a
++    confirmation dialog). Any planned path that already exists and isn't
++    in this set raises OutputCollisionError instead of overwriting it -
++    ffmpeg's own -y flag is never allowed to make that decision silently.
+     """
+     if not chapters:
+         raise ValueError(
+@@ -376,15 +717,32 @@ def split_chapters(
+ 
+     output_folder.mkdir(parents=True, exist_ok=True)
+ 
++    # Check for collisions before the (comparatively expensive) duration
++    # probe below, so a caller that skipped preflight_check still fails
++    # fast instead of waiting on ffprobe first.
++    planned = plan_output_files(chapters, output_folder, container=container)
++    overwrite = overwrite or set()
++    colliding = [p for p in planned if p.exists and p.path not in overwrite]
++    if colliding:
++        raise OutputCollisionError(colliding)
++
+     if chapters[-1].end_seconds is None:
+         chapters[-1].end_seconds = probe_duration_seconds(atmos_mkv)
+ 
+     output_paths: list[Path] = []
+ 
+-    for ch in chapters:
++    for item in planned:
++        ch = item.chapter
++        out_path = item.path
+         track_name = ch.name or f"Track {ch.index:02d}"
+-        filename = f"{ch.index:02d} - {sanitize_filename(track_name)}.{container}"
+-        out_path = output_folder / filename
++
++        # Write to a temp file in the same folder (so the final rename is
++        # on the same filesystem and therefore atomic) and only move it to
++        # the real name once ffmpeg has produced a non-empty file. A crash,
++        # Ctrl+C, or killed process mid-chapter then leaves a stray
++        # ".partial-*" file instead of a truncated file sitting at the
++        # real track name looking like a finished, playable song.
++        tmp_path = out_path.with_name(f".partial-{uuid.uuid4().hex}-{out_path.name}")
+ 
+         # -ss before -i does a fast keyframe seek in the input instead of
+         # decoding from the start of the file on every single chapter
+@@ -394,7 +752,7 @@ def split_chapters(
+         # is dramatically faster, especially for later chapters in a long file.
+         args = [
+             TOOL_PATHS["ffmpeg"],
+-            "-y",
++            "-y",  # only ever overwrites our own freshly-named temp file
+             "-ss", str(ch.start_seconds),
+             "-i", str(atmos_mkv),
+         ]
+@@ -404,14 +762,24 @@ def split_chapters(
+             # comes before -i - so we need the chapter's duration, not its
+             # absolute end time, to get the correct cut point.
+             args += ["-t", str(ch.end_seconds - ch.start_seconds)]
+-        args += ["-c", "copy", str(out_path)]
++        args += ["-c", "copy", str(tmp_path)]
+ 
+         if progress_cb:
+             progress_cb(f"Splitting chapter {ch.index}: {track_name}")
+ 
+-        result = _run(args, timeout=1800)  # 30 min per chapter - stream-copy is fast, this is just a safety net
+-        if result.returncode != 0:
+-            raise RuntimeError(f"ffmpeg failed on chapter {ch.index}:\n{result.stderr}")
++        try:
++            result = _run(args, timeout=1800)  # 30 min per chapter - stream-copy is fast, this is just a safety net
++            if result.returncode != 0:
++                raise RuntimeError(f"ffmpeg failed on chapter {ch.index}:\n{result.stderr}")
++            if not tmp_path.is_file() or tmp_path.stat().st_size == 0:
++                raise RuntimeError(
++                    f"ffmpeg reported success on chapter {ch.index} ({track_name}) "
++                    f"but produced no output file, or an empty one."
++                )
++            os.replace(tmp_path, out_path)
++        except Exception:
++            tmp_path.unlink(missing_ok=True)
++            raise
+ 
+         output_paths.append(out_path)
+ 
+@@ -430,6 +798,7 @@ def run_full_pipeline(
+     container: str = "mkv",
+     progress_cb: Optional[Callable[[str], None]] = None,
+     cleanup_work_folder: bool = True,
++    overwrite: Optional[set[Path]] = None,
+ ) -> list[Path]:
+     """
+     track_names: maps chapter index (1-based) -> song title.
+@@ -440,6 +809,12 @@ def run_full_pipeline(
+     finished successfully. If splitting raises, the work folder is left
+     in place so the extraction doesn't have to be redone. Set to False to
+     always keep the intermediate file around (e.g. for debugging).
++
++    overwrite: paths pre-approved for overwrite by the caller (see
++    preflight_check()). Extraction still runs even if this ends up wrong
++    (e.g. the disk changed since preflight) - the collision is caught by
++    split_chapters afterwards rather than skipped, so nothing gets
++    silently overwritten either way.
+     """
+     atmos_mkv = work_folder / "_atmos_extracted.mkv"
+     extract_atmos_mkv(playlist, atmos_mkv, progress_cb=progress_cb)
+@@ -450,7 +825,8 @@ def run_full_pipeline(
+             ch.name = track_names[ch.index]
+ 
+     results = split_chapters(
+-        atmos_mkv, chapters, output_folder, container=container, progress_cb=progress_cb
++        atmos_mkv, chapters, output_folder, container=container,
++        progress_cb=progress_cb, overwrite=overwrite,
+     )
+ 
+     if cleanup_work_folder:
+diff --git a/main.py b/main.py
+index 1cf4b52..526918d 100644
+--- a/main.py
++++ b/main.py
+@@ -124,8 +124,11 @@ class AtmosTrackSplitterApp(ctk.CTk):
+ 
+         self.cfg = settings.load()
+         self.playlists: list[extractor.Playlist] = []
++        self.playlist_scores: list[extractor.PlaylistScore] = []
+         self.selected_playlist: extractor.Playlist | None = None
++        self.selected_playlist_score: extractor.PlaylistScore | None = None
+         self.chapter_name_vars: dict[int, ctk.StringVar] = {}
++        self.chapter_source_labels: dict[int, ctk.CTkLabel] = {}
+ 
+         self._apply_tool_paths()
+         self._build_layout()
+@@ -229,7 +232,7 @@ class AtmosTrackSplitterApp(ctk.CTk):
+         )
+         self.playlist_option.grid(row=0, column=1, sticky="ew", padx=8, pady=8)
+ 
+-        self.playlist_info_label = ctk.CTkLabel(playlist_frame, text="", justify="left")
++        self.playlist_info_label = ctk.CTkLabel(playlist_frame, text="", justify="left", wraplength=740)
+         self.playlist_info_label.grid(row=1, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 8))
+ 
+         # --- Paste tracklist row ---
+@@ -258,7 +261,6 @@ class AtmosTrackSplitterApp(ctk.CTk):
+         self.chapter_scroll = ctk.CTkScrollableFrame(self, label_text="Chapters / Track Names")
+         self.chapter_scroll.grid(row=3, column=0, sticky="nsew", padx=16, pady=8)
+         self.chapter_scroll.grid_columnconfigure(1, weight=1)
+-
+         # --- Output folder + run row ---
+         bottom_frame = ctk.CTkFrame(self)
+         bottom_frame.grid(row=4, column=0, sticky="ew", padx=16, pady=(8, 16))
+@@ -334,53 +336,80 @@ class AtmosTrackSplitterApp(ctk.CTk):
+             self.set_status("No playlists found.")
+             return
+ 
+-        labels = [
+-            f"{p.path.name}  (chapters: {p.chapter_count}, atmos: {'yes' if p.has_atmos else 'no'})"
+-            for p in playlists
+-        ]
++        # Score every playlist as a candidate instead of silently picking
++        # whichever Atmos playlist has the most chapters - the dropdown
++        # is sorted best-first and the reasons behind each score are
++        # shown below it so the choice can actually be reviewed, not just
++        # accepted on faith.
++        self.playlist_scores = extractor.score_playlists(playlists)
++        self.playlists = [s.playlist for s in self.playlist_scores]
++
++        labels = [self._playlist_label(s) for s in self.playlist_scores]
+         self.playlist_option.configure(values=labels)
++        self.playlist_option.set(labels[0])
++        self.on_playlist_selected(labels[0])
+ 
+-        best = extractor.find_best_atmos_playlist(playlists)
+-        if best:
+-            idx = playlists.index(best)
+-            self.playlist_option.set(labels[idx])
+-            self.on_playlist_selected(labels[idx])
+-            self.set_status(f"Found Atmos track in {best.path.name}. Ready to name tracks.")
++        top = self.playlist_scores[0]
++        if top.playlist.has_atmos:
++            self.set_status(
++                f"Best candidate: {top.playlist.path.name} (score {top.score:.0f}) - review below."
++            )
+         else:
+-            self.playlist_option.set(labels[0])
+-            self.on_playlist_selected(labels[0])
+             self.set_status("No Atmos track found in any playlist.")
+ 
++    @staticmethod
++    def _playlist_label(score: extractor.PlaylistScore) -> str:
++        tag = " [possible duplicate]" if score.duplicate_of else ""
++        return (
++            f"{score.playlist.path.name}  -  score {score.score:.0f}  "
++            f"(chapters: {score.playlist.chapter_count}, atmos: "
++            f"{'yes' if score.playlist.has_atmos else 'no'}){tag}"
++        )
++
+     def on_playlist_selected(self, label: str) -> None:
+         idx = self.playlist_option.cget("values").index(label)
+-        self.selected_playlist = self.playlists[idx]
++        score = self.playlist_scores[idx]
++        self.selected_playlist_score = score
++        self.selected_playlist = score.playlist
+         pl = self.selected_playlist
+ 
+-        atmos = pl.atmos_track
+-        info = f"{len(pl.tracks)} tracks, {pl.chapter_count} chapters. "
+-        if atmos:
+-            info += f"Atmos track ID {atmos.track_id}"
+-            info += f" + video track ID {pl.video_track.track_id}." if pl.video_track else " (no video track found)."
+-        else:
+-            info += "No Atmos track in this playlist."
+-        self.playlist_info_label.configure(text=info)
+-
+-        self._rebuild_chapter_table(pl.chapter_count)
++        info_lines = [f"{len(pl.tracks)} tracks, {pl.chapter_count} chapters."]
++        if pl.duration_seconds:
++            info_lines[0] += f" Runs {pl.duration_seconds / 60:.0f} minutes."
++        info_lines.append("Why this ranking:")
++        info_lines.extend(f"  - {r}" for r in score.reasons)
++        self.playlist_info_label.configure(text="\n".join(info_lines))
++
++        # Preserve anything already typed for chapter numbers that still
++        # exist in the new playlist, so switching between candidate
++        # playlists (e.g. a different angle/cut with matching chapter
++        # positions) doesn't throw away names entered by hand.
++        preserved = {
++            i: var.get() for i, var in self.chapter_name_vars.items() if var.get().strip()
++        }
++        self._rebuild_chapter_table(pl.chapter_count, preserve=preserved)
++        self._load_embedded_chapter_names(pl)
+ 
+     # ------------------------------------------------------------------
+     # Chapter naming table
+     # ------------------------------------------------------------------
+ 
+-    def _rebuild_chapter_table(self, chapter_count: int) -> None:
++    def _rebuild_chapter_table(
++        self, chapter_count: int, preserve: dict[int, str] | None = None
++    ) -> None:
++        preserve = preserve or {}
+         for widget in self.chapter_scroll.winfo_children():
+             widget.destroy()
+         self.chapter_name_vars.clear()
++        self.chapter_source_labels.clear()
+ 
+         for i in range(1, chapter_count + 1):
+             ctk.CTkLabel(self.chapter_scroll, text=f"Chapter {i:02d}", width=90).grid(
+                 row=i - 1, column=0, padx=(4, 8), pady=4, sticky="w"
+             )
+             var = ctk.StringVar()
++            if i in preserve:
++                var.set(preserve[i])
+             entry = ctk.CTkEntry(
+                 self.chapter_scroll, textvariable=var, placeholder_text=f"Track {i:02d}"
+             )
+@@ -388,6 +417,62 @@ class AtmosTrackSplitterApp(ctk.CTk):
+             enable_clipboard(entry)
+             self.chapter_name_vars[i] = var
+ 
++            # Shows where the current name came from - "from disc" once
++            # prefilled from an embedded chapter title, flipping to
++            # "edited" the moment the user changes it, blank if the user
++            # typed the name themselves and nothing was ever auto-filled.
++            source_label = ctk.CTkLabel(
++                self.chapter_scroll, text="", width=90, text_color="gray60"
++            )
++            source_label.grid(row=i - 1, column=2, padx=(0, 4), pady=4, sticky="w")
++            self.chapter_source_labels[i] = source_label
++
++    def _load_embedded_chapter_names(self, pl: extractor.Playlist) -> None:
++        """
++        Read chapter names embedded in the playlist itself, if any, and
++        use them to prefill blank naming fields. Runs off the UI thread:
++        this reads directly from the .mpls playlist (mkvextract can read
++        Blu-ray playlists the same way mkvmerge already does for
++        scanning), so it's normally quick - it isn't copying the video or
++        Atmos audio streams - but a slow/network drive could still make it
++        worth not blocking the UI for.
++        """
++        def work() -> None:
++            try:
++                chapters = extractor.read_chapters(pl.path)
++            except Exception:
++                return  # no embedded chapter names available - not fatal, nothing to prefill
++            self.after(0, lambda: self._apply_embedded_chapter_names(pl, chapters))
++
++        threading.Thread(target=work, daemon=True).start()
++
++    def _apply_embedded_chapter_names(
++        self, pl: extractor.Playlist, chapters: list[extractor.Chapter]
++    ) -> None:
++        if self.selected_playlist is not pl:
++            return  # user already moved on to a different playlist selection
++        for ch in chapters:
++            if ch.index not in self.chapter_name_vars or not ch.embedded_name:
++                continue
++            var = self.chapter_name_vars[ch.index]
++            if var.get().strip():
++                continue  # already has a name (preserved or hand-typed) - don't clobber it
++            var.set(ch.embedded_name)
++            self._mark_chapter_source(ch.index, ch.embedded_name)
++
++    def _mark_chapter_source(self, index: int, baseline_value: str) -> None:
++        """Label a chapter's name as auto-filled, and flip the label to 'edited' if the user changes it."""
++        label = self.chapter_source_labels.get(index)
++        var = self.chapter_name_vars.get(index)
++        if label is None or var is None:
++            return
++        label.configure(text="from disc")
++
++        def on_change(*_args, baseline=baseline_value, lbl=label, v=var) -> None:
++            lbl.configure(text="edited" if v.get() != baseline else "from disc")
++
++        var.trace_add("write", on_change)
++
+     def fill_from_paste(self) -> None:
+         text = self.paste_textbox.get("1.0", "end").strip()
+         if not text:
+@@ -399,6 +484,12 @@ class AtmosTrackSplitterApp(ctk.CTk):
+                 # Strip a leading "1.", "01 -", "1)" etc if present.
+                 cleaned = _strip_leading_number(line)
+                 self.chapter_name_vars[i].set(cleaned)
++                # A pasted tracklist is an explicit user action - it should
++                # read as user-entered, not linger as "from disc"/"edited"
++                # from whatever was there before.
++                label = self.chapter_source_labels.get(i)
++                if label is not None:
++                    label.configure(text="")
+ 
+         if len(lines) != len(self.chapter_name_vars):
+             self.set_status(
+@@ -420,6 +511,17 @@ class AtmosTrackSplitterApp(ctk.CTk):
+             messagebox.showerror("No Atmos track", "Selected playlist has no Atmos track.")
+             return
+ 
++        if self.selected_playlist_score and self.selected_playlist_score.duplicate_of:
++            proceed = messagebox.askyesno(
++                "Possible duplicate playlist",
++                f"{self.selected_playlist.path.name} looks like a duplicate or "
++                f"alternate angle of {self.selected_playlist_score.duplicate_of.name} "
++                "(same duration, chapter count, and tracks).\n\n"
++                "Continue with this playlist anyway?",
++            )
++            if not proceed:
++                return
++
+         output_str = self.output_entry.get().strip()
+         if not output_str:
+             messagebox.showwarning("No output folder", "Pick an output folder first.")
+@@ -438,6 +540,11 @@ class AtmosTrackSplitterApp(ctk.CTk):
+             if var.get().strip()
+         }
+ 
++        resolution = self._resolve_output_collisions(output_folder, track_names)
++        if resolution is None:
++            return  # user cancelled out of the collision dialog
++        output_folder, overwrite_paths = resolution
++
+         self.extract_button.configure(state="disabled", text="Working...")
+         self.set_status(f"Starting extraction -> {output_folder}")
+ 
+@@ -454,13 +561,141 @@ class AtmosTrackSplitterApp(ctk.CTk):
+                     output_folder=output_folder,
+                     container=self.cfg.get("output_container", "mkv"),
+                     progress_cb=progress,
++                    overwrite=overwrite_paths,
+                 )
+                 self.after(0, lambda: self._on_extraction_complete(results))
++            except extractor.OutputCollisionError as exc:
++                # Rare - preflight already checked - but the output folder
++                # could change on disk between preflight and the actual
++                # write (another process, another run). Handled the same
++                # as any other extraction failure: nothing overwritten,
++                # user told exactly what collided.
++                self.after(0, lambda: self._on_extraction_failed(exc))
+             except Exception as exc:  # noqa: BLE001
+                 self.after(0, lambda: self._on_extraction_failed(exc))
+ 
+         threading.Thread(target=work, daemon=True).start()
+ 
++    def _resolve_output_collisions(
++        self, output_folder: Path, track_names: dict[int, str]
++    ) -> tuple[Path, set[Path]] | None:
++        """
++        Run the fast filename-planning check before starting the slow
++        extraction pipeline, and get explicit user confirmation for any
++        output file that would already exist. Returns
++        (output_folder, approved_overwrite_paths), where output_folder may
++        have been changed if the user picked a different one; or None if
++        the user cancelled.
++        """
++        chapter_count = self.selected_playlist.chapter_count
++        container = self.cfg.get("output_container", "mkv")
++
++        warned_duplicates = False
++
++        while True:
++            planned = extractor.preflight_check(
++                output_folder, chapter_count, track_names, container=container
++            )
++
++            duplicates = [p for p in planned if p.duplicate_name]
++            if duplicates and not warned_duplicates:
++                names = ", ".join(sorted({p.chapter.name for p in duplicates}))
++                proceed = messagebox.askyesno(
++                    "Duplicate track names",
++                    f"More than one chapter is named the same thing ({names}). "
++                    "This usually means a pasted tracklist got mis-aligned - "
++                    "the chapter numbers stay separate either way, but you may "
++                    "want to double check the names before continuing.\n\n"
++                    "Continue anyway?",
++                )
++                if not proceed:
++                    return None
++                warned_duplicates = True  # don't re-ask if they loop back (e.g. after choosing a folder)
++
++            colliding = [p for p in planned if p.exists]
++            if not colliding:
++                return output_folder, set()
++
++            choice = self._show_collision_dialog(output_folder, colliding)
++            if choice == "cancel":
++                return None
++            if choice == "choose_folder":
++                new_library_folder = filedialog.askdirectory(
++                    title="Select a different output folder"
++                )
++                if not new_library_folder:
++                    continue  # back to the same dialog, nothing changed
++                source_folder = Path(self.source_entry.get().strip())
++                album_name = extractor.derive_album_folder_name(source_folder)
++                output_folder = Path(new_library_folder) / album_name
++                self.output_entry.delete(0, "end")
++                self.output_entry.insert(0, new_library_folder)
++                continue
++            if choice == "overwrite":
++                return output_folder, {p.path for p in colliding}
++
++    def _show_collision_dialog(self, output_folder: Path, colliding: list) -> str:
++        """
++        Modal dialog listing output files that already exist. Nothing is
++        ever overwritten without the user explicitly choosing to here.
++        Returns "cancel", "choose_folder", or "overwrite".
++        """
++        result = {"choice": "cancel"}
++
++        dialog = ctk.CTkToplevel(self)
++        dialog.title("Output files already exist")
++        dialog.geometry("480x380")
++        dialog.transient(self)
++        dialog.grab_set()
++
++        ctk.CTkLabel(
++            dialog,
++            text=f"{len(colliding)} file(s) already exist in \"{output_folder.name}\":",
++            font=ctk.CTkFont(weight="bold"),
++            wraplength=440,
++            justify="left",
++        ).pack(padx=16, pady=(16, 8), anchor="w")
++
++        listbox = ctk.CTkTextbox(dialog, height=180)
++        listbox.pack(fill="both", expand=True, padx=16, pady=(0, 8))
++        listbox.insert("1.0", "\n".join(p.path.name for p in colliding))
++        listbox.configure(state="disabled")
++
++        ctk.CTkLabel(
++            dialog,
++            text="Nothing is overwritten automatically. Choose how to proceed:",
++            wraplength=440,
++            justify="left",
++        ).pack(padx=16, pady=(0, 8), anchor="w")
++
++        button_row = ctk.CTkFrame(dialog, fg_color="transparent")
++        button_row.pack(pady=(0, 16))
++
++        def pick(choice: str) -> None:
++            result["choice"] = choice
++            dialog.destroy()
++
++        ctk.CTkButton(
++            button_row, text="Cancel", width=100, command=lambda: pick("cancel")
++        ).pack(side="left", padx=6)
++        ctk.CTkButton(
++            button_row,
++            text="Choose another folder",
++            width=170,
++            command=lambda: pick("choose_folder"),
++        ).pack(side="left", padx=6)
++        ctk.CTkButton(
++            button_row,
++            text="Overwrite these files",
++            width=170,
++            fg_color="#a33",
++            hover_color="#822",
++            command=lambda: pick("overwrite"),
++        ).pack(side="left", padx=6)
++
++        dialog.wait_window()
++        return result["choice"]
++
+     def _on_extraction_complete(self, results: list[Path]) -> None:
+         self.extract_button.configure(state="normal", text="Extract && Split")
+         self.set_status(f"Done. Wrote {len(results)} files to {self.output_entry.get()}")

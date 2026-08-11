@@ -124,8 +124,11 @@ class AtmosTrackSplitterApp(ctk.CTk):
 
         self.cfg = settings.load()
         self.playlists: list[extractor.Playlist] = []
+        self.playlist_scores: list[extractor.PlaylistScore] = []
         self.selected_playlist: extractor.Playlist | None = None
+        self.selected_playlist_score: extractor.PlaylistScore | None = None
         self.chapter_name_vars: dict[int, ctk.StringVar] = {}
+        self.chapter_source_labels: dict[int, ctk.CTkLabel] = {}
 
         self._apply_tool_paths()
         self._build_layout()
@@ -229,7 +232,7 @@ class AtmosTrackSplitterApp(ctk.CTk):
         )
         self.playlist_option.grid(row=0, column=1, sticky="ew", padx=8, pady=8)
 
-        self.playlist_info_label = ctk.CTkLabel(playlist_frame, text="", justify="left")
+        self.playlist_info_label = ctk.CTkLabel(playlist_frame, text="", justify="left", wraplength=740)
         self.playlist_info_label.grid(row=1, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 8))
 
         # --- Paste tracklist row ---
@@ -258,7 +261,6 @@ class AtmosTrackSplitterApp(ctk.CTk):
         self.chapter_scroll = ctk.CTkScrollableFrame(self, label_text="Chapters / Track Names")
         self.chapter_scroll.grid(row=3, column=0, sticky="nsew", padx=16, pady=8)
         self.chapter_scroll.grid_columnconfigure(1, weight=1)
-
         # --- Output folder + run row ---
         bottom_frame = ctk.CTkFrame(self)
         bottom_frame.grid(row=4, column=0, sticky="ew", padx=16, pady=(8, 16))
@@ -334,59 +336,142 @@ class AtmosTrackSplitterApp(ctk.CTk):
             self.set_status("No playlists found.")
             return
 
-        labels = [
-            f"{p.path.name}  (chapters: {p.chapter_count}, atmos: {'yes' if p.has_atmos else 'no'})"
-            for p in playlists
-        ]
-        self.playlist_option.configure(values=labels)
+        # Score every playlist as a candidate instead of silently picking
+        # whichever Atmos playlist has the most chapters - the dropdown
+        # is sorted best-first and the reasons behind each score are
+        # shown below it so the choice can actually be reviewed, not just
+        # accepted on faith.
+        self.playlist_scores = extractor.score_playlists(playlists)
+        self.playlists = [s.playlist for s in self.playlist_scores]
 
-        best = extractor.find_best_atmos_playlist(playlists)
-        if best:
-            idx = playlists.index(best)
-            self.playlist_option.set(labels[idx])
-            self.on_playlist_selected(labels[idx])
-            self.set_status(f"Found Atmos track in {best.path.name}. Ready to name tracks.")
+        labels = [self._playlist_label(s) for s in self.playlist_scores]
+        self.playlist_option.configure(values=labels)
+        self.playlist_option.set(labels[0])
+        self.on_playlist_selected(labels[0])
+
+        top = self.playlist_scores[0]
+        if top.playlist.has_atmos:
+            self.set_status(
+                f"Best candidate: {top.playlist.path.name} (score {top.score:.0f}) - review below."
+            )
         else:
-            self.playlist_option.set(labels[0])
-            self.on_playlist_selected(labels[0])
             self.set_status("No Atmos track found in any playlist.")
+
+    @staticmethod
+    def _playlist_label(score: extractor.PlaylistScore) -> str:
+        tag = " [possible duplicate]" if score.duplicate_of else ""
+        return (
+            f"{score.playlist.path.name}  -  score {score.score:.0f}  "
+            f"(chapters: {score.playlist.chapter_count}, atmos: "
+            f"{'yes' if score.playlist.has_atmos else 'no'}){tag}"
+        )
 
     def on_playlist_selected(self, label: str) -> None:
         idx = self.playlist_option.cget("values").index(label)
-        self.selected_playlist = self.playlists[idx]
+        score = self.playlist_scores[idx]
+        self.selected_playlist_score = score
+        self.selected_playlist = score.playlist
         pl = self.selected_playlist
 
-        atmos = pl.atmos_track
-        info = f"{len(pl.tracks)} tracks, {pl.chapter_count} chapters. "
-        if atmos:
-            info += f"Atmos track ID {atmos.track_id}"
-            info += f" + video track ID {pl.video_track.track_id}." if pl.video_track else " (no video track found)."
-        else:
-            info += "No Atmos track in this playlist."
-        self.playlist_info_label.configure(text=info)
+        info_lines = [f"{len(pl.tracks)} tracks, {pl.chapter_count} chapters."]
+        if pl.duration_seconds:
+            info_lines[0] += f" Runs {pl.duration_seconds / 60:.0f} minutes."
+        info_lines.append("Why this ranking:")
+        info_lines.extend(f"  - {r}" for r in score.reasons)
+        self.playlist_info_label.configure(text="\n".join(info_lines))
 
-        self._rebuild_chapter_table(pl.chapter_count)
+        # Preserve anything already typed for chapter numbers that still
+        # exist in the new playlist, so switching between candidate
+        # playlists (e.g. a different angle/cut with matching chapter
+        # positions) doesn't throw away names entered by hand.
+        preserved = {
+            i: var.get() for i, var in self.chapter_name_vars.items() if var.get().strip()
+        }
+        self._rebuild_chapter_table(pl.chapter_count, preserve=preserved)
+        self._load_embedded_chapter_names(pl)
 
     # ------------------------------------------------------------------
     # Chapter naming table
     # ------------------------------------------------------------------
 
-    def _rebuild_chapter_table(self, chapter_count: int) -> None:
+    def _rebuild_chapter_table(
+        self, chapter_count: int, preserve: dict[int, str] | None = None
+    ) -> None:
+        preserve = preserve or {}
         for widget in self.chapter_scroll.winfo_children():
             widget.destroy()
         self.chapter_name_vars.clear()
+        self.chapter_source_labels.clear()
 
         for i in range(1, chapter_count + 1):
             ctk.CTkLabel(self.chapter_scroll, text=f"Chapter {i:02d}", width=90).grid(
                 row=i - 1, column=0, padx=(4, 8), pady=4, sticky="w"
             )
             var = ctk.StringVar()
+            if i in preserve:
+                var.set(preserve[i])
             entry = ctk.CTkEntry(
                 self.chapter_scroll, textvariable=var, placeholder_text=f"Track {i:02d}"
             )
             entry.grid(row=i - 1, column=1, padx=(0, 8), pady=4, sticky="ew")
             enable_clipboard(entry)
             self.chapter_name_vars[i] = var
+
+            # Shows where the current name came from - "from disc" once
+            # prefilled from an embedded chapter title, flipping to
+            # "edited" the moment the user changes it, blank if the user
+            # typed the name themselves and nothing was ever auto-filled.
+            source_label = ctk.CTkLabel(
+                self.chapter_scroll, text="", width=90, text_color="gray60"
+            )
+            source_label.grid(row=i - 1, column=2, padx=(0, 4), pady=4, sticky="w")
+            self.chapter_source_labels[i] = source_label
+
+    def _load_embedded_chapter_names(self, pl: extractor.Playlist) -> None:
+        """
+        Read chapter names embedded in the playlist itself, if any, and
+        use them to prefill blank naming fields. Runs off the UI thread:
+        this reads directly from the .mpls playlist (mkvextract can read
+        Blu-ray playlists the same way mkvmerge already does for
+        scanning), so it's normally quick - it isn't copying the video or
+        Atmos audio streams - but a slow/network drive could still make it
+        worth not blocking the UI for.
+        """
+        def work() -> None:
+            try:
+                chapters = extractor.read_chapters(pl.path)
+            except Exception:
+                return  # no embedded chapter names available - not fatal, nothing to prefill
+            self.after(0, lambda: self._apply_embedded_chapter_names(pl, chapters))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _apply_embedded_chapter_names(
+        self, pl: extractor.Playlist, chapters: list[extractor.Chapter]
+    ) -> None:
+        if self.selected_playlist is not pl:
+            return  # user already moved on to a different playlist selection
+        for ch in chapters:
+            if ch.index not in self.chapter_name_vars or not ch.embedded_name:
+                continue
+            var = self.chapter_name_vars[ch.index]
+            if var.get().strip():
+                continue  # already has a name (preserved or hand-typed) - don't clobber it
+            var.set(ch.embedded_name)
+            self._mark_chapter_source(ch.index, ch.embedded_name)
+
+    def _mark_chapter_source(self, index: int, baseline_value: str) -> None:
+        """Label a chapter's name as auto-filled, and flip the label to 'edited' if the user changes it."""
+        label = self.chapter_source_labels.get(index)
+        var = self.chapter_name_vars.get(index)
+        if label is None or var is None:
+            return
+        label.configure(text="from disc")
+
+        def on_change(*_args, baseline=baseline_value, lbl=label, v=var) -> None:
+            lbl.configure(text="edited" if v.get() != baseline else "from disc")
+
+        var.trace_add("write", on_change)
 
     def fill_from_paste(self) -> None:
         text = self.paste_textbox.get("1.0", "end").strip()
@@ -399,6 +484,12 @@ class AtmosTrackSplitterApp(ctk.CTk):
                 # Strip a leading "1.", "01 -", "1)" etc if present.
                 cleaned = _strip_leading_number(line)
                 self.chapter_name_vars[i].set(cleaned)
+                # A pasted tracklist is an explicit user action - it should
+                # read as user-entered, not linger as "from disc"/"edited"
+                # from whatever was there before.
+                label = self.chapter_source_labels.get(i)
+                if label is not None:
+                    label.configure(text="")
 
         if len(lines) != len(self.chapter_name_vars):
             self.set_status(
@@ -420,6 +511,17 @@ class AtmosTrackSplitterApp(ctk.CTk):
             messagebox.showerror("No Atmos track", "Selected playlist has no Atmos track.")
             return
 
+        if self.selected_playlist_score and self.selected_playlist_score.duplicate_of:
+            proceed = messagebox.askyesno(
+                "Possible duplicate playlist",
+                f"{self.selected_playlist.path.name} looks like a duplicate or "
+                f"alternate angle of {self.selected_playlist_score.duplicate_of.name} "
+                "(same duration, chapter count, and tracks).\n\n"
+                "Continue with this playlist anyway?",
+            )
+            if not proceed:
+                return
+
         output_str = self.output_entry.get().strip()
         if not output_str:
             messagebox.showwarning("No output folder", "Pick an output folder first.")
@@ -438,6 +540,11 @@ class AtmosTrackSplitterApp(ctk.CTk):
             if var.get().strip()
         }
 
+        resolution = self._resolve_output_collisions(output_folder, track_names)
+        if resolution is None:
+            return  # user cancelled out of the collision dialog
+        output_folder, overwrite_paths = resolution
+
         self.extract_button.configure(state="disabled", text="Working...")
         self.set_status(f"Starting extraction -> {output_folder}")
 
@@ -454,12 +561,140 @@ class AtmosTrackSplitterApp(ctk.CTk):
                     output_folder=output_folder,
                     container=self.cfg.get("output_container", "mkv"),
                     progress_cb=progress,
+                    overwrite=overwrite_paths,
                 )
                 self.after(0, lambda: self._on_extraction_complete(results))
+            except extractor.OutputCollisionError as exc:
+                # Rare - preflight already checked - but the output folder
+                # could change on disk between preflight and the actual
+                # write (another process, another run). Handled the same
+                # as any other extraction failure: nothing overwritten,
+                # user told exactly what collided.
+                self.after(0, lambda: self._on_extraction_failed(exc))
             except Exception as exc:  # noqa: BLE001
                 self.after(0, lambda: self._on_extraction_failed(exc))
 
         threading.Thread(target=work, daemon=True).start()
+
+    def _resolve_output_collisions(
+        self, output_folder: Path, track_names: dict[int, str]
+    ) -> tuple[Path, set[Path]] | None:
+        """
+        Run the fast filename-planning check before starting the slow
+        extraction pipeline, and get explicit user confirmation for any
+        output file that would already exist. Returns
+        (output_folder, approved_overwrite_paths), where output_folder may
+        have been changed if the user picked a different one; or None if
+        the user cancelled.
+        """
+        chapter_count = self.selected_playlist.chapter_count
+        container = self.cfg.get("output_container", "mkv")
+
+        warned_duplicates = False
+
+        while True:
+            planned = extractor.preflight_check(
+                output_folder, chapter_count, track_names, container=container
+            )
+
+            duplicates = [p for p in planned if p.duplicate_name]
+            if duplicates and not warned_duplicates:
+                names = ", ".join(sorted({p.chapter.name for p in duplicates}))
+                proceed = messagebox.askyesno(
+                    "Duplicate track names",
+                    f"More than one chapter is named the same thing ({names}). "
+                    "This usually means a pasted tracklist got mis-aligned - "
+                    "the chapter numbers stay separate either way, but you may "
+                    "want to double check the names before continuing.\n\n"
+                    "Continue anyway?",
+                )
+                if not proceed:
+                    return None
+                warned_duplicates = True  # don't re-ask if they loop back (e.g. after choosing a folder)
+
+            colliding = [p for p in planned if p.exists]
+            if not colliding:
+                return output_folder, set()
+
+            choice = self._show_collision_dialog(output_folder, colliding)
+            if choice == "cancel":
+                return None
+            if choice == "choose_folder":
+                new_library_folder = filedialog.askdirectory(
+                    title="Select a different output folder"
+                )
+                if not new_library_folder:
+                    continue  # back to the same dialog, nothing changed
+                source_folder = Path(self.source_entry.get().strip())
+                album_name = extractor.derive_album_folder_name(source_folder)
+                output_folder = Path(new_library_folder) / album_name
+                self.output_entry.delete(0, "end")
+                self.output_entry.insert(0, new_library_folder)
+                continue
+            if choice == "overwrite":
+                return output_folder, {p.path for p in colliding}
+
+    def _show_collision_dialog(self, output_folder: Path, colliding: list) -> str:
+        """
+        Modal dialog listing output files that already exist. Nothing is
+        ever overwritten without the user explicitly choosing to here.
+        Returns "cancel", "choose_folder", or "overwrite".
+        """
+        result = {"choice": "cancel"}
+
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Output files already exist")
+        dialog.geometry("480x380")
+        dialog.transient(self)
+        dialog.grab_set()
+
+        ctk.CTkLabel(
+            dialog,
+            text=f"{len(colliding)} file(s) already exist in \"{output_folder.name}\":",
+            font=ctk.CTkFont(weight="bold"),
+            wraplength=440,
+            justify="left",
+        ).pack(padx=16, pady=(16, 8), anchor="w")
+
+        listbox = ctk.CTkTextbox(dialog, height=180)
+        listbox.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+        listbox.insert("1.0", "\n".join(p.path.name for p in colliding))
+        listbox.configure(state="disabled")
+
+        ctk.CTkLabel(
+            dialog,
+            text="Nothing is overwritten automatically. Choose how to proceed:",
+            wraplength=440,
+            justify="left",
+        ).pack(padx=16, pady=(0, 8), anchor="w")
+
+        button_row = ctk.CTkFrame(dialog, fg_color="transparent")
+        button_row.pack(pady=(0, 16))
+
+        def pick(choice: str) -> None:
+            result["choice"] = choice
+            dialog.destroy()
+
+        ctk.CTkButton(
+            button_row, text="Cancel", width=100, command=lambda: pick("cancel")
+        ).pack(side="left", padx=6)
+        ctk.CTkButton(
+            button_row,
+            text="Choose another folder",
+            width=170,
+            command=lambda: pick("choose_folder"),
+        ).pack(side="left", padx=6)
+        ctk.CTkButton(
+            button_row,
+            text="Overwrite these files",
+            width=170,
+            fg_color="#a33",
+            hover_color="#822",
+            command=lambda: pick("overwrite"),
+        ).pack(side="left", padx=6)
+
+        dialog.wait_window()
+        return result["choice"]
 
     def _on_extraction_complete(self, results: list[Path]) -> None:
         self.extract_button.configure(state="normal", text="Extract && Split")
