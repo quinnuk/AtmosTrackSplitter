@@ -154,44 +154,82 @@ class AtmosTrackSplitterApp(ctk.CTk):
     def _show_missing_tools_dialog(self, missing: list[str]) -> None:
         dialog = ctk.CTkToplevel(self)
         dialog.title("Missing required tools")
-        dialog.geometry("460x300")
+        dialog.geometry("520x340")
         dialog.transient(self)
         dialog.grab_set()
 
-        ctk.CTkLabel(
+        header = ctk.CTkLabel(
             dialog,
-            text="These required tools weren't found on your PATH:",
+            text="These required tools weren't found:",
             font=ctk.CTkFont(weight="bold"),
-            wraplength=420,
+            wraplength=480,
             justify="left",
-        ).pack(padx=16, pady=(16, 8), anchor="w")
+        )
+        header.pack(padx=16, pady=(16, 8), anchor="w")
 
-        for name in missing:
-            row = ctk.CTkFrame(dialog, fg_color="transparent")
-            row.pack(fill="x", padx=16, pady=4)
-            ctk.CTkLabel(row, text=f"•  {name}", width=120, anchor="w").pack(side="left")
-            url = extractor.TOOL_DOWNLOAD_URLS.get(name, "")
-            ctk.CTkButton(
-                row,
-                text="Download",
-                width=100,
-                command=lambda u=url: webbrowser.open(u),
-            ).pack(side="left")
+        rows_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        rows_frame.pack(fill="x", padx=16)
+
+        # Tracks which tools in this dialog still need resolving. Locating
+        # one successfully removes it from here and the row list is
+        # rebuilt, rather than closing the whole dialog - if several
+        # tools are missing at once, fixing one shouldn't lose the rest.
+        remaining = set(missing)
+
+        def locate(name: str) -> None:
+            exe_path = filedialog.askopenfilename(
+                title=f"Locate {name}",
+                filetypes=[(f"{name}.exe", f"{name}.exe"), ("All files", "*.*")],
+            )
+            if not exe_path:
+                return
+            extractor.set_tool_path(name, exe_path)
+            settings.update(**{f"{name}_path": exe_path})
+            if extractor.check_tools().get(name):
+                remaining.discard(name)
+                refresh_rows()
+            else:
+                messagebox.showerror(
+                    "Still not working",
+                    f"That file didn't run successfully as {name}. "
+                    "Double check you picked the right executable.",
+                )
+
+        def refresh_rows() -> None:
+            for widget in rows_frame.winfo_children():
+                widget.destroy()
+            for name in missing:
+                if name not in remaining:
+                    continue
+                row = ctk.CTkFrame(rows_frame, fg_color="transparent")
+                row.pack(fill="x", pady=4)
+                ctk.CTkLabel(row, text=f"•  {name}", width=110, anchor="w").pack(side="left")
+                url = extractor.TOOL_DOWNLOAD_URLS.get(name, "")
+                ctk.CTkButton(
+                    row, text="Download", width=90,
+                    command=lambda u=url: webbrowser.open(u),
+                ).pack(side="left", padx=(0, 6))
+                ctk.CTkButton(
+                    row, text="Locate...", width=90,
+                    command=lambda n=name: locate(n),
+                ).pack(side="left")
+            if not remaining:
+                header.configure(text="All required tools are now configured.")
+
+        refresh_rows()
 
         ctk.CTkLabel(
             dialog,
             text=(
-                "Install these and make sure they're on your system PATH, then "
-                "restart the app. If they're already installed somewhere else, "
-                "set the exact path in settings.json instead."
+                "Use Download to install a missing tool, or Locate... if it's "
+                "already installed somewhere not on your PATH. A located path "
+                "is saved and reused automatically from now on."
             ),
-            wraplength=420,
+            wraplength=480,
             justify="left",
-        ).pack(padx=16, pady=(8, 16), anchor="w")
+        ).pack(padx=16, pady=(12, 8), anchor="w")
 
-        ctk.CTkButton(dialog, text="Continue anyway", command=dialog.destroy).pack(
-            pady=(0, 16)
-        )
+        ctk.CTkButton(dialog, text="Close", command=dialog.destroy).pack(pady=(0, 16))
 
     # ------------------------------------------------------------------
     # Layout
