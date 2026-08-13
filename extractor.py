@@ -119,59 +119,95 @@ def set_tool_path(tool: str, path: str) -> None:
 
 def check_tools() -> dict[str, bool]:
     """
-    Check whether each configured tool is actually runnable by invoking
-    `<tool> --version`, rather than merely checking that a file exists at
-    the configured path or that something by that name is on PATH.
-    Existence alone doesn't prove much: a stale/broken shim, a
-    wrong-architecture binary, a permissions problem, or an unrelated file
-    that happens to share the name would all pass a mere existence check
-    but fail here - and fail here in the same way they'd fail when the
-    app actually tries to use them, so problems surface at startup
-    instead of mid-extraction.
+    Check whether each configured tool is actually runnable and actually
+    the right tool. See verify_tool_at_path() for why - existence alone
+    doesn't prove much, and neither does exit code alone.
 
     Returns {tool_name: True/False}.
     """
-    found: dict[str, bool] = {}
-    for name, configured_path in TOOL_PATHS.items():
-        try:
-            result = _run([configured_path, "--version"], timeout=10)
-            found[name] = result.returncode == 0
-        except (FileNotFoundError, OSError, RuntimeError):
-            # FileNotFoundError/OSError: nothing runnable at that path/name.
-            # RuntimeError: _run's own timeout wrapper - a tool that hangs
-            # on --version isn't usable either.
-            found[name] = False
-    return found
+    return {name: verify_tool_at_path(path, name)[0] for name, path in TOOL_PATHS.items()}
 
 
-def verify_tool_at_path(path: str, timeout: float = 10.0) -> tuple[bool, str]:
+# ffmpeg/ffprobe use a single-dash "-version" - "--version" (GNU style) is
+# NOT a recognised option for them. mkvmerge/mkvextract do use GNU-style
+# "--version". Using the wrong flag doesn't necessarily fail cleanly: ffmpeg
+# prints its full version banner to stderr unconditionally at startup,
+# *before* it even parses arguments, so an unrecognised "--version" still
+# produces a perfectly legible banner followed by an "Unrecognized option"
+# error and a nonzero exit - which looks exactly like a real failure if
+# you're only checking the exit code.
+_VERSION_FLAGS = {
+    "mkvmerge": "--version",
+    "mkvextract": "--version",
+    "ffmpeg": "-version",
+    "ffprobe": "-version",
+}
+
+# Text each tool prints about itself, used to confirm a binary's actual
+# identity rather than just trusting that "something ran successfully".
+_IDENTIFYING_TEXT = {
+    "mkvmerge": "mkvmerge v",
+    "mkvextract": "mkvextract v",
+    "ffmpeg": "ffmpeg version",
+    "ffprobe": "ffprobe version",
+}
+
+
+def verify_tool_at_path(path: str, tool_name: str, timeout: float = 10.0) -> tuple[bool, str]:
     """
-    Check whether a specific path is actually a working copy of a tool,
-    by running `<path> --version` - the same check check_tools() applies
-    to the configured paths, but usable directly against a path the user
-    just picked in a file browser, before it's saved to settings at all.
-    A file existing at that path (or even being named "ffmpeg.exe") isn't
-    proof it runs - it could be a wrong-architecture build, a stub/shim
-    that doesn't behave like the real tool, or unrelated entirely.
+    Check whether a specific path is actually a working copy of tool_name -
+    usable directly against a path the user just picked in a file browser,
+    before it's saved to settings at all.
+
+    This checks the tool's own self-identifying banner text in its output
+    (e.g. "ffmpeg version") rather than trusting the exit code alone, for
+    two reasons that both showed up in practice:
+
+    - ffmpeg/ffprobe print their version banner to stderr unconditionally
+      at startup, before parsing arguments - so a genuinely-working binary
+      given the wrong flag can still exit nonzero after having already
+      printed a perfectly valid banner. Checking only the exit code would
+      wrongly reject it and show that banner back as if it were an error.
+    - A file that runs fine and exits 0 isn't necessarily the *right*
+      tool - ffmpeg.exe and ffprobe.exe sit right next to each other in
+      every install, and it's an easy misclick to pick one while browsing
+      for the other. Checking identity catches that with a clear message
+      instead of a false pass.
 
     Returns (True, first line of version output) on success, or
-    (False, a short human-readable reason) on failure.
+    (False, a short human-readable reason - naming what it actually looks
+    like, if it's recognisably one of our *other* tools) on failure.
     """
+    flag = _VERSION_FLAGS.get(tool_name, "--version")
     try:
-        result = _run([path, "--version"], timeout=timeout)
+        result = _run([path, flag], timeout=timeout)
     except (FileNotFoundError, OSError) as exc:
         return False, f"Could not run this file: {exc}"
     except RuntimeError as exc:
         # _run's own timeout wrapper - already a clear message.
         return False, str(exc)
 
+    combined = f"{result.stdout or ''}\n{result.stderr or ''}"
+    combined_lower = combined.lower()
+
+    expected = _IDENTIFYING_TEXT.get(tool_name, tool_name)
+    if expected.lower() in combined_lower:
+        first_line = next((ln.strip() for ln in combined.splitlines() if ln.strip()), "OK")
+        return True, first_line
+
+    # Not the expected tool - check whether it's recognisably one of our
+    # *other* tools, so a mixed-up file gets a specific, actionable answer
+    # ("this looks like ffprobe, not ffmpeg") instead of a raw dump.
+    for other_name, other_text in _IDENTIFYING_TEXT.items():
+        if other_name != tool_name and other_text.lower() in combined_lower:
+            return False, f"This looks like {other_name}, not {tool_name}."
+
     if result.returncode != 0:
-        detail_lines = (result.stderr or result.stdout or "").strip().splitlines()
+        detail_lines = [ln.strip() for ln in combined.splitlines() if ln.strip()]
         detail = detail_lines[0] if detail_lines else f"exited with code {result.returncode}"
         return False, detail
 
-    text = (result.stdout or result.stderr or "").strip()
-    return True, (text.splitlines()[0] if text else "OK")
+    return False, "Ran, but didn't produce recognisable version output."
 
 
 # Tools that are always installed together in the same folder, so once the
@@ -211,15 +247,11 @@ def guess_sibling_tool_path(chosen_path: str, tool_name: str) -> Optional[str]:
 
 
 def _tool_versions() -> dict[str, str]:
-    """First line of `<tool> --version` for each configured tool, for the job manifest."""
+    """First line of each configured tool's version output, for the job manifest."""
     versions: dict[str, str] = {}
     for name, configured_path in TOOL_PATHS.items():
-        try:
-            result = _run([configured_path, "--version"], timeout=10)
-            text = (result.stdout or result.stderr or "").strip()
-            versions[name] = text.splitlines()[0] if text else "unknown"
-        except (FileNotFoundError, OSError, RuntimeError):
-            versions[name] = "unknown"
+        ok, message = verify_tool_at_path(configured_path, name)
+        versions[name] = message if ok else "unknown"
     return versions
 
 

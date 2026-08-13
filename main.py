@@ -200,7 +200,7 @@ class AtmosTrackSplitterApp(ctk.CTk):
             if not path_str:
                 return
 
-            ok, message = extractor.verify_tool_at_path(path_str)
+            ok, message = extractor.verify_tool_at_path(path_str, name)
             if not ok:
                 messagebox.showerror(
                     "Not a working tool",
@@ -221,7 +221,7 @@ class AtmosTrackSplitterApp(ctk.CTk):
             sibling_name = extractor.SIBLING_TOOL_NAMES.get(name)
             sibling_path = extractor.guess_sibling_tool_path(path_str, name)
             if sibling_path and sibling_name and sibling_name in remaining:
-                sib_ok, sib_message = extractor.verify_tool_at_path(sibling_path)
+                sib_ok, sib_message = extractor.verify_tool_at_path(sibling_path, sibling_name)
                 if sib_ok:
                     extractor.set_tool_path(sibling_name, sibling_path)
                     settings.update(**{f"{sibling_name}_path": sibling_path})

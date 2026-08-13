@@ -1,5 +1,5 @@
 diff --git a/extractor.py b/extractor.py
-index 8f9ea64..d996342 100644
+index 8f9ea64..fc7dfd6 100644
 --- a/extractor.py
 +++ b/extractor.py
 @@ -15,11 +15,21 @@ imported by main.py.
@@ -58,72 +58,103 @@ index 8f9ea64..d996342 100644
  
  
  # ---------------------------------------------------------------------------
-@@ -102,23 +119,179 @@ def set_tool_path(tool: str, path: str) -> None:
+@@ -102,23 +119,211 @@ def set_tool_path(tool: str, path: str) -> None:
  
  def check_tools() -> dict[str, bool]:
      """
 -    Check whether each configured tool is actually runnable: found on PATH
 -    if it's a bare command name (e.g. "mkvmerge"), or exists at that exact
 -    location if it's been set to a specific file path.
-+    Check whether each configured tool is actually runnable by invoking
-+    `<tool> --version`, rather than merely checking that a file exists at
-+    the configured path or that something by that name is on PATH.
-+    Existence alone doesn't prove much: a stale/broken shim, a
-+    wrong-architecture binary, a permissions problem, or an unrelated file
-+    that happens to share the name would all pass a mere existence check
-+    but fail here - and fail here in the same way they'd fail when the
-+    app actually tries to use them, so problems surface at startup
-+    instead of mid-extraction.
++    Check whether each configured tool is actually runnable and actually
++    the right tool. See verify_tool_at_path() for why - existence alone
++    doesn't prove much, and neither does exit code alone.
  
      Returns {tool_name: True/False}.
      """
-     found: dict[str, bool] = {}
-     for name, configured_path in TOOL_PATHS.items():
--        looks_like_path = "/" in configured_path or "\\" in configured_path
--        if looks_like_path:
--            found[name] = Path(configured_path).is_file()
--        else:
--            found[name] = shutil.which(configured_path) is not None
-+        try:
-+            result = _run([configured_path, "--version"], timeout=10)
-+            found[name] = result.returncode == 0
-+        except (FileNotFoundError, OSError, RuntimeError):
-+            # FileNotFoundError/OSError: nothing runnable at that path/name.
-+            # RuntimeError: _run's own timeout wrapper - a tool that hangs
-+            # on --version isn't usable either.
-+            found[name] = False
-     return found
- 
- 
--def _run(args: list[str], timeout: Optional[float] = None) -> subprocess.CompletedProcess:
-+def verify_tool_at_path(path: str, timeout: float = 10.0) -> tuple[bool, str]:
+-    found: dict[str, bool] = {}
++    return {name: verify_tool_at_path(path, name)[0] for name, path in TOOL_PATHS.items()}
++
++
++# ffmpeg/ffprobe use a single-dash "-version" - "--version" (GNU style) is
++# NOT a recognised option for them. mkvmerge/mkvextract do use GNU-style
++# "--version". Using the wrong flag doesn't necessarily fail cleanly: ffmpeg
++# prints its full version banner to stderr unconditionally at startup,
++# *before* it even parses arguments, so an unrecognised "--version" still
++# produces a perfectly legible banner followed by an "Unrecognized option"
++# error and a nonzero exit - which looks exactly like a real failure if
++# you're only checking the exit code.
++_VERSION_FLAGS = {
++    "mkvmerge": "--version",
++    "mkvextract": "--version",
++    "ffmpeg": "-version",
++    "ffprobe": "-version",
++}
++
++# Text each tool prints about itself, used to confirm a binary's actual
++# identity rather than just trusting that "something ran successfully".
++_IDENTIFYING_TEXT = {
++    "mkvmerge": "mkvmerge v",
++    "mkvextract": "mkvextract v",
++    "ffmpeg": "ffmpeg version",
++    "ffprobe": "ffprobe version",
++}
++
++
++def verify_tool_at_path(path: str, tool_name: str, timeout: float = 10.0) -> tuple[bool, str]:
 +    """
-+    Check whether a specific path is actually a working copy of a tool,
-+    by running `<path> --version` - the same check check_tools() applies
-+    to the configured paths, but usable directly against a path the user
-+    just picked in a file browser, before it's saved to settings at all.
-+    A file existing at that path (or even being named "ffmpeg.exe") isn't
-+    proof it runs - it could be a wrong-architecture build, a stub/shim
-+    that doesn't behave like the real tool, or unrelated entirely.
++    Check whether a specific path is actually a working copy of tool_name -
++    usable directly against a path the user just picked in a file browser,
++    before it's saved to settings at all.
++
++    This checks the tool's own self-identifying banner text in its output
++    (e.g. "ffmpeg version") rather than trusting the exit code alone, for
++    two reasons that both showed up in practice:
++
++    - ffmpeg/ffprobe print their version banner to stderr unconditionally
++      at startup, before parsing arguments - so a genuinely-working binary
++      given the wrong flag can still exit nonzero after having already
++      printed a perfectly valid banner. Checking only the exit code would
++      wrongly reject it and show that banner back as if it were an error.
++    - A file that runs fine and exits 0 isn't necessarily the *right*
++      tool - ffmpeg.exe and ffprobe.exe sit right next to each other in
++      every install, and it's an easy misclick to pick one while browsing
++      for the other. Checking identity catches that with a clear message
++      instead of a false pass.
 +
 +    Returns (True, first line of version output) on success, or
-+    (False, a short human-readable reason) on failure.
++    (False, a short human-readable reason - naming what it actually looks
++    like, if it's recognisably one of our *other* tools) on failure.
 +    """
++    flag = _VERSION_FLAGS.get(tool_name, "--version")
 +    try:
-+        result = _run([path, "--version"], timeout=timeout)
++        result = _run([path, flag], timeout=timeout)
 +    except (FileNotFoundError, OSError) as exc:
 +        return False, f"Could not run this file: {exc}"
 +    except RuntimeError as exc:
 +        # _run's own timeout wrapper - already a clear message.
 +        return False, str(exc)
 +
++    combined = f"{result.stdout or ''}\n{result.stderr or ''}"
++    combined_lower = combined.lower()
++
++    expected = _IDENTIFYING_TEXT.get(tool_name, tool_name)
++    if expected.lower() in combined_lower:
++        first_line = next((ln.strip() for ln in combined.splitlines() if ln.strip()), "OK")
++        return True, first_line
++
++    # Not the expected tool - check whether it's recognisably one of our
++    # *other* tools, so a mixed-up file gets a specific, actionable answer
++    # ("this looks like ffprobe, not ffmpeg") instead of a raw dump.
++    for other_name, other_text in _IDENTIFYING_TEXT.items():
++        if other_name != tool_name and other_text.lower() in combined_lower:
++            return False, f"This looks like {other_name}, not {tool_name}."
++
 +    if result.returncode != 0:
-+        detail_lines = (result.stderr or result.stdout or "").strip().splitlines()
++        detail_lines = [ln.strip() for ln in combined.splitlines() if ln.strip()]
 +        detail = detail_lines[0] if detail_lines else f"exited with code {result.returncode}"
 +        return False, detail
 +
-+    text = (result.stdout or result.stderr or "").strip()
-+    return True, (text.splitlines()[0] if text else "OK")
++    return False, "Ran, but didn't produce recognisable version output."
 +
 +
 +# Tools that are always installed together in the same folder, so once the
@@ -163,15 +194,17 @@ index 8f9ea64..d996342 100644
 +
 +
 +def _tool_versions() -> dict[str, str]:
-+    """First line of `<tool> --version` for each configured tool, for the job manifest."""
++    """First line of each configured tool's version output, for the job manifest."""
 +    versions: dict[str, str] = {}
-+    for name, configured_path in TOOL_PATHS.items():
-+        try:
-+            result = _run([configured_path, "--version"], timeout=10)
-+            text = (result.stdout or result.stderr or "").strip()
-+            versions[name] = text.splitlines()[0] if text else "unknown"
-+        except (FileNotFoundError, OSError, RuntimeError):
-+            versions[name] = "unknown"
+     for name, configured_path in TOOL_PATHS.items():
+-        looks_like_path = "/" in configured_path or "\\" in configured_path
+-        if looks_like_path:
+-            found[name] = Path(configured_path).is_file()
+-        else:
+-            found[name] = shutil.which(configured_path) is not None
+-    return found
++        ok, message = verify_tool_at_path(configured_path, name)
++        versions[name] = message if ok else "unknown"
 +    return versions
 +
 +
@@ -237,8 +270,9 @@ index 8f9ea64..d996342 100644
 +
 +class JobCancelled(Exception):
 +    """Raised when a running job is stopped via a cancel_event."""
-+
-+
+ 
+ 
+-def _run(args: list[str], timeout: Optional[float] = None) -> subprocess.CompletedProcess:
 +def _run(
 +    args: list[str],
 +    timeout: Optional[float] = None,
@@ -247,7 +281,7 @@ index 8f9ea64..d996342 100644
      """
      Run a subprocess, hiding the console window on Windows.
  
-@@ -133,38 +306,80 @@ def _run(args: list[str], timeout: Optional[float] = None) -> subprocess.Complet
+@@ -133,38 +338,80 @@ def _run(args: list[str], timeout: Optional[float] = None) -> subprocess.Complet
  
      A timeout is also supported (default: no timeout) so that a genuinely
      hung external tool doesn't wedge the app forever with no feedback.
@@ -350,7 +384,7 @@ index 8f9ea64..d996342 100644
  
  def find_playlists(disc_folder: Path) -> list[Path]:
      """Find .mpls playlist files under BDMV/PLAYLIST (ignores BACKUP)."""
-@@ -175,28 +390,64 @@ def find_playlists(disc_folder: Path) -> list[Path]:
+@@ -175,28 +422,64 @@ def find_playlists(disc_folder: Path) -> list[Path]:
  
  
  def inspect_playlist(playlist_path: Path) -> Playlist:
@@ -430,7 +464,7 @@ index 8f9ea64..d996342 100644
  
      return pl
  
-@@ -206,12 +457,138 @@ def scan_disc_folder(disc_folder: Path) -> list[Playlist]:
+@@ -206,12 +489,138 @@ def scan_disc_folder(disc_folder: Path) -> list[Playlist]:
      return [inspect_playlist(p) for p in find_playlists(disc_folder)]
  
  
@@ -574,7 +608,7 @@ index 8f9ea64..d996342 100644
  
  
  # ---------------------------------------------------------------------------
-@@ -222,6 +599,7 @@ def extract_atmos_mkv(
+@@ -222,6 +631,7 @@ def extract_atmos_mkv(
      playlist: Playlist,
      output_path: Path,
      progress_cb: Optional[Callable[[str], None]] = None,
@@ -582,7 +616,7 @@ index 8f9ea64..d996342 100644
  ) -> Path:
      """
      Remux the video track + just the Atmos audio track (+ chapters) out of
-@@ -250,7 +628,7 @@ def extract_atmos_mkv(
+@@ -250,7 +660,7 @@ def extract_atmos_mkv(
              f"Extracting {target}Atmos audio track {audio_track.track_id} -> {output_path.name}"
          )
  
@@ -591,7 +625,7 @@ index 8f9ea64..d996342 100644
      if result.returncode != 0:
          raise RuntimeError(f"mkvmerge failed:\n{result.stdout}\n{result.stderr}")
  
-@@ -272,8 +650,18 @@ def _timecode_to_seconds(tc: str) -> float:
+@@ -272,8 +682,18 @@ def _timecode_to_seconds(tc: str) -> float:
      return int(h) * 3600 + int(mnt) * 60 + float(s)
  
  
@@ -612,7 +646,7 @@ index 8f9ea64..d996342 100644
      result = _run([TOOL_PATHS["mkvextract"], str(mkv_path), "chapters", "-"], timeout=60)
      if result.returncode != 0:
          raise RuntimeError(f"mkvextract failed:\n{result.stderr}")
-@@ -293,8 +681,16 @@ def read_chapters(mkv_path: Path) -> list[Chapter]:
+@@ -293,8 +713,16 @@ def read_chapters(mkv_path: Path) -> list[Chapter]:
          start_el = atom.find("ChapterTimeStart")
          if start_el is None or start_el.text is None:
              continue
@@ -630,7 +664,7 @@ index 8f9ea64..d996342 100644
          )
  
      # Fill in end times from the next chapter's start.
-@@ -307,6 +703,40 @@ def read_chapters(mkv_path: Path) -> list[Chapter]:
+@@ -307,6 +735,40 @@ def read_chapters(mkv_path: Path) -> list[Chapter]:
      return chapters
  
  
@@ -671,7 +705,7 @@ index 8f9ea64..d996342 100644
  def probe_duration_seconds(media_path: Path) -> float:
      """Get total duration of a media file via ffprobe (used for the last chapter)."""
      args = [
-@@ -323,16 +753,624 @@ def probe_duration_seconds(media_path: Path) -> float:
+@@ -323,16 +785,624 @@ def probe_duration_seconds(media_path: Path) -> float:
          raise RuntimeError(f"Could not determine duration of {media_path}")
  
  
@@ -1297,7 +1331,7 @@ index 8f9ea64..d996342 100644
  
  
  _TRAILING_BRACKET_RE = re.compile(r"\s*[\[\(][^\[\]\(\)]*[\]\)]\s*$")
-@@ -363,10 +1401,32 @@ def split_chapters(
+@@ -363,10 +1433,32 @@ def split_chapters(
      output_folder: Path,
      container: str = "mkv",
      progress_cb: Optional[Callable[[str], None]] = None,
@@ -1330,7 +1364,7 @@ index 8f9ea64..d996342 100644
      """
      if not chapters:
          raise ValueError(
-@@ -376,15 +1436,44 @@ def split_chapters(
+@@ -376,15 +1468,44 @@ def split_chapters(
  
      output_folder.mkdir(parents=True, exist_ok=True)
  
@@ -1378,7 +1412,7 @@ index 8f9ea64..d996342 100644
  
          # -ss before -i does a fast keyframe seek in the input instead of
          # decoding from the start of the file on every single chapter
-@@ -394,7 +1483,7 @@ def split_chapters(
+@@ -394,7 +1515,7 @@ def split_chapters(
          # is dramatically faster, especially for later chapters in a long file.
          args = [
              TOOL_PATHS["ffmpeg"],
@@ -1387,7 +1421,7 @@ index 8f9ea64..d996342 100644
              "-ss", str(ch.start_seconds),
              "-i", str(atmos_mkv),
          ]
-@@ -404,16 +1493,29 @@ def split_chapters(
+@@ -404,16 +1525,29 @@ def split_chapters(
              # comes before -i - so we need the chapter's duration, not its
              # absolute end time, to get the correct cut point.
              args += ["-t", str(ch.end_seconds - ch.start_seconds)]
@@ -1421,7 +1455,7 @@ index 8f9ea64..d996342 100644
  
      return output_paths
  
-@@ -430,32 +1532,130 @@ def run_full_pipeline(
+@@ -430,32 +1564,130 @@ def run_full_pipeline(
      container: str = "mkv",
      progress_cb: Optional[Callable[[str], None]] = None,
      cleanup_work_folder: bool = True,
@@ -1567,7 +1601,7 @@ index 8f9ea64..d996342 100644
  
      return results
 diff --git a/main.py b/main.py
-index 1cf4b52..b761030 100644
+index 1cf4b52..5bd4843 100644
 --- a/main.py
 +++ b/main.py
 @@ -13,7 +13,9 @@ Workflow:
@@ -1646,7 +1680,7 @@ index 1cf4b52..b761030 100644
 +            if not path_str:
 +                return
 +
-+            ok, message = extractor.verify_tool_at_path(path_str)
++            ok, message = extractor.verify_tool_at_path(path_str, name)
 +            if not ok:
 +                messagebox.showerror(
 +                    "Not a working tool",
@@ -1667,7 +1701,7 @@ index 1cf4b52..b761030 100644
 +            sibling_name = extractor.SIBLING_TOOL_NAMES.get(name)
 +            sibling_path = extractor.guess_sibling_tool_path(path_str, name)
 +            if sibling_path and sibling_name and sibling_name in remaining:
-+                sib_ok, sib_message = extractor.verify_tool_at_path(sibling_path)
++                sib_ok, sib_message = extractor.verify_tool_at_path(sibling_path, sibling_name)
 +                if sib_ok:
 +                    extractor.set_tool_path(sibling_name, sibling_path)
 +                    settings.update(**{f"{sibling_name}_path": sibling_path})
