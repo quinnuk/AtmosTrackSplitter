@@ -136,14 +136,17 @@ REPO_URL = "https://github.com/quinnuk/AtmosTrackSplitter"
 HELP_TEXT = """ATMOS TRACK SPLITTER - TIPS & TROUBLESHOOTING
 
 WORKFLOW
-1. Browse to a folder containing a ripped Blu-ray disc (it needs the
-   standard BDMV/PLAYLIST/*.mpls structure - not a flattened single MKV)
-   and click Scan.
+1. Point the source field at a folder containing a ripped Blu-ray disc
+   (it needs the standard BDMV/PLAYLIST/*.mpls structure - not a
+   flattened single MKV), by typing/pasting the path, hitting Enter, or
+   using Browse. It scans automatically - no Scan button needed.
 2. The app inspects every playlist and ranks them by likelihood of
    being "the" Atmos concert/album feature - has an Atmos track, has
-   chapters, includes video, sensible duration. The highest-scoring one
-   is pre-selected; the dropdown shows the reasoning if you want to
-   check its work or pick a different candidate yourself.
+   chapters, includes video, sensible duration. If there's only one
+   plausible candidate it's picked automatically and the reasoning is
+   shown right there; the playlist dropdown only appears when two or
+   more candidates are genuinely close enough to be worth choosing
+   between yourself.
 3. Name each chapter, using whichever of the four methods below suits
    the disc, then click Extract & Split.
 
@@ -152,9 +155,10 @@ NAMING CHAPTERS - FOUR WAYS
   filled in automatically as soon as you select the playlist - no
   button needed. The "from disc" tag next to a field shows this
   happened; it flips to "edited" if you change that name yourself.
-- Fill: paste a plain tracklist (one song per line, in the same order
-  as the chapters) into the box and click Fill. Leading numbering like
-  "1." or "01 -" is stripped automatically.
+- Paste: paste a plain tracklist (one song per line, in the same order
+  as the chapters) into the box - it fills the chapter fields
+  automatically as you type or paste, no button to click. Leading
+  numbering like "1." or "01 -" is stripped automatically.
 - Import Tracklist...: reads a tracklist file. Handles plain .txt,
   .cue, .json, and disc-meta .nfo files. If the app found candidate
   files sitting in the disc folder (BDInfo.txt, Track Listing.txt,
