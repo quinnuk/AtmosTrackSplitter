@@ -20,6 +20,12 @@
 
 ---
 
+## Is this for you?
+
+You've ripped a Blu-ray Audio disc — a concert film, a live album, or one of the growing number of **Dolby Atmos remaster/reissue Blu-rays** (SDE's Surround Series, immersive audio reissues, etc.) — and you want it in your **Plex / Jellyfin / Kodi** library as individual, correctly-named song files instead of one giant feature-length file. If that's you, this tool exists for exactly that job, and nothing else.
+
+It is **not** a ripping tool, a re-encoder, or a general-purpose media converter — see [Notes & known limitations](#notes--known-limitations) for what it deliberately doesn't do.
+
 ## Table of Contents
 
 - [Why this exists](#why-this-exists)
@@ -29,6 +35,7 @@
 - [Usage](#usage)
 - [Building a standalone .exe](#building-a-standalone-exe)
 - [Project layout](#project-layout)
+- [Recovering from an interrupted run](#recovering-from-an-interrupted-run)
 - [Notes & known limitations](#notes--known-limitations)
 - [Roadmap](#roadmap)
 - [Reporting Issues](#reporting-issues)
@@ -37,34 +44,38 @@
 
 ## Why this exists
 
-Concert Blu-rays with a Dolby Atmos mix are usually one giant file with chapter markers per song. Most tools either:
+Concert Blu-rays and Atmos reissue discs are usually one giant file with chapter markers per song. Most tools either:
 - flatten/transcode the audio (losing the Atmos object metadata), or
 - give you the whole disc as one file with no easy way to split it, or
 - require you to hand-build `mkvmerge`/`ffmpeg` commands per chapter.
 
-Atmos Track Splitter automates the whole thing: point it at the ripped disc folder, find the Atmos playlist, type in the track names, and get one clean, bit-exact file per song.
+Atmos Track Splitter automates the whole thing: point it at the ripped disc folder, let it find the right Atmos playlist, name the tracks (typed, pasted, imported, or looked up), and get one clean, bit-exact file per song.
 
 ## Features
 
-- 🔍 **Auto-detects the Atmos track** — scans every `.mpls` playlist with `mkvmerge -i` and picks the one with a `TrueHD Atmos` track and the most chapters
-- ⚠️ **Checks for MKVToolNix/ffmpeg on startup** — if either is missing from your PATH, you get a dialog with direct download links instead of a confusing failure mid-extraction
-- ✂️ **No re-encoding** — stream-copies video + Atmos audio only; the object-based Atmos mix stays bit-exact
-- 📺 **Keeps the video track** — so playback on a TV shows the concert, not a black screen
-- 📝 **Fast track naming** — paste a whole tracklist at once and it fills every chapter field in order (strips leading `1.`, `01 -`, etc.)
-- 📁 **Clean output** — creates a sensibly-named album folder and one file per song, named from your chapter titles
-- 💾 **Remembers your settings** — last-used folders and tool paths persist between runs
-- 🪟 **Runs standalone** — build a windowed `.exe` with no attached console, so closing the terminal (or just double-clicking it) never kills a mid-extraction job
+- 🔍 **Auto-detects the right playlist** — scans every `.mpls` playlist and scores each one (Atmos track present, chapter count, video track, duration) rather than just grabbing the first Atmos match, and explains its reasoning so you can sanity-check or override the pick. Near-identical playlists (alternate angles, region variants) are automatically flagged as likely duplicates instead of shown as separate top candidates.
+- 📝 **Four ways to name tracks** — paste a plain list and click Fill; import a tracklist file (`.txt`, `.nfo`, `.cue`, or a saved `.tracklist.json`); pull in whatever chapter names are already embedded in the disc; or look the album up on **MusicBrainz** and match its tracklist to your chapters automatically. Every method shows a review screen before anything is applied — matched chapters pre-checked, mismatches flagged, nothing silently overwritten.
+- 📂 **Finds sidecar tracklists for you** — if a `.txt`/`.nfo`/`.cue` tracklist is already sitting in the disc rip folder, the app tells you so you don't have to go looking.
+- ⏸️ **Resumable, cancel-safe jobs** — extraction progress is checkpointed to a manifest, so a crash, a cancel, or a closed app mid-job doesn't mean starting over; relaunching against the same output folder offers to resume exactly where it left off.
+- 📋 **Per-job extraction log** — every run writes an `extraction.log` you can open with one click, showing exactly what each external tool was told to do — the single most useful thing to attach to a bug report.
+- ⚠️ **Checks for MKVToolNix/ffmpeg on startup** — if either is missing, you get a dialog with direct download links and a Browse button that verifies and remembers a custom path, instead of a confusing failure mid-extraction.
+- ✂️ **No re-encoding** — stream-copies video + Atmos audio only; the object-based Atmos mix stays bit-exact.
+- 📺 **Keeps the video track** — so playback on a TV shows the concert, not a black screen.
+- 📁 **Clean output, never overwritten silently** — a sensibly-named album folder, one file per song, and a confirmation before any existing output file is replaced.
+- 💾 **Remembers your settings** — last-used folders and tool paths persist between runs.
+- 🪟 **Runs standalone** — build a windowed `.exe` with no attached console, so closing the terminal (or just double-clicking it) never kills a mid-extraction job.
+- ❓ **Built-in Help menu** — tips and troubleshooting live in the app itself (Help → Tips & Troubleshooting), alongside quick links to this README and the issue tracker.
 
 ## How it works
 
 1. Point the app at a folder containing a ripped disc — it must have the standard, unmodified `BDMV/PLAYLIST/*.mpls` structure (not a flattened single MKV).
-2. It runs `mkvmerge -i` on each playlist to find which one has a `TrueHD Atmos` track and how many chapters it has, and auto-selects the best match.
-3. You type or paste in song names for each chapter.
-4. It extracts the video track plus just the Atmos audio (stream-copy, no transcoding) via `mkvmerge`, dropping the other audio tracks (AC-3, DTS-HD, etc). It then reads the exact chapter timestamps from the extracted file and splits it into one file per song with `ffmpeg`.
+2. It inspects every playlist via `mkvmerge -i` and scores each as a candidate for the Atmos feature, pre-selecting the best match and showing its reasoning.
+3. You name each chapter — paste, import a file, pull in embedded names, or look it up on MusicBrainz — and review the proposed matches before accepting them.
+4. It extracts the video track plus just the Atmos audio (stream-copy, no transcoding) via `mkvmerge`, dropping the other audio tracks (AC-3, DTS-HD, etc). It then reads the exact chapter timestamps and splits the result into one file per song with `ffmpeg`, checkpointing progress as it goes.
 
 ## Requirements
 
-**External tools** (must be installed and either on your `PATH`, or their paths set in `settings.py` / a future settings dialog):
+**External tools** (must be installed and either on your `PATH`, or their paths set via the app's missing-tools dialog / `settings.py`):
 
 | Tool | Provides | Link |
 |---|---|---|
@@ -100,8 +111,9 @@ This produces `AtmosTrackSplitter.exe` — a windowed exe with no attached conso
 
 ```
 AtmosTrackSplitter/
-├── main.py                    GUI (customtkinter)
-├── extractor.py                Core logic: scanning, extraction, chapters, splitting
+├── main.py                    GUI (customtkinter): scanning, naming, extraction, Help menu
+├── extractor.py                Core logic: scanning, scoring, chapters, tracklist matching,
+│                                MusicBrainz lookup, splitting, resume/manifest handling
 ├── settings.py                 Persisted settings (tool paths, last-used folders)
 ├── split_now.py                 CLI: split an already-extracted Atmos MKV by hand
 ├── AtmosTrackSplitter.spec     PyInstaller build spec
@@ -111,9 +123,11 @@ AtmosTrackSplitter/
 
 `extractor.py` has no GUI dependencies, so it can be imported and used on its own (e.g. from a script or a future CLI).
 
-### Recovering from an interrupted run
+## Recovering from an interrupted run
 
-If extraction succeeds but the app is closed or crashes before splitting finishes, the intermediate `_atmos_extracted.mkv` is left in the work folder instead of being cleaned up. Rather than re-running the (slow) extraction step again, split that file directly:
+If the app is closed, crashes, or a job is cancelled partway through, just point it at the same source and output folders again — it'll detect the in-progress manifest and offer to **resume** from wherever it left off, skipping whatever was already completed.
+
+If you'd rather handle it by hand (or the GUI resume path doesn't apply — e.g. you deleted the manifest, or extraction succeeded but you want to split into different names), the intermediate `_atmos_extracted.mkv` is left in the work folder rather than being cleaned up automatically on failure. Split it directly:
 
 ```bash
 python split_now.py "path\to\_atmos_extracted.mkv" "path\to\output folder" --names-file tracks.txt
@@ -125,14 +139,15 @@ python split_now.py "path\to\_atmos_extracted.mkv" "path\to\output folder" --nam
 
 - Assumes chapters map 1:1 to songs. This holds for most concert/live-album Blu-rays, but always sanity-check the chapter count against the actual tracklist before running the paste-to-fill step.
 - If a disc has no Atmos track, or the Atmos track isn't chaptered per song, this tool won't help — it depends on both being true.
+- **MusicBrainz coverage is best for mainstream releases.** Small-run audiophile Blu-ray Pure Audio / Surround Series discs and other boutique/mail-order-only editions are often missing from MusicBrainz entirely, or only indexed under a different parent release with a different track count. If the number of tracks MusicBrainz returns looks nothing like your chapter count, that's almost always why — use Import Tracklist with a sidecar file instead.
 - Output format defaults to `.mkv` (TrueHD Atmos in an MKV container) to preserve the object-based Atmos metadata — converting to a plain audio container like FLAC would discard it.
 - Folder-in, folder-out only — no CLI or disc-drive/ripping support. This tool works on discs you've **already ripped yourself**; it doesn't rip or decrypt anything.
 
 ## Roadmap
 
 - [ ] Folder-watch mode (auto-detect new rips dropped into a monitored folder and prompt for naming)
-- [ ] Settings dialog for tool paths instead of hand-editing `settings.py`/JSON
-- [ ] MusicBrainz lookup as a fallback for track names
+- [ ] Full settings dialog for tool paths (currently only settable via the startup missing-tools dialog or by hand-editing `settings.json`)
+- [x] ~~MusicBrainz lookup as a fallback for track names~~ — shipped
 
 ## Reporting Issues
 
@@ -140,7 +155,7 @@ Found a bug or have a suggestion? Please open an issue rather than a Reddit comm
 
 **[Open an issue](https://github.com/quinnuk/AtmosTrackSplitter/issues/new/choose)**
 
-A bug report with the `mkvmerge -i` output for the affected playlist is the most useful thing you can include — it's normally enough to track down what's actually going wrong.
+The most useful things to include: the `mkvmerge -i` output for the affected playlist, and the `extraction.log` from the job (Open Log button in the app, or the file directly in your output folder) — between the two, that's normally enough to track down what's actually going wrong.
 
 ## Support This Project
 
