@@ -129,10 +129,14 @@ WORKFLOW
    chapters, includes video, sensible duration. The highest-scoring one
    is pre-selected; the dropdown shows the reasoning if you want to
    check its work or pick a different candidate yourself.
-3. Name each chapter, using whichever of the three methods below suits
+3. Name each chapter, using whichever of the four methods below suits
    the disc, then click Extract && Split.
 
-NAMING CHAPTERS - THREE WAYS
+NAMING CHAPTERS - FOUR WAYS
+- From disc: if the playlist has chapter names embedded on it, they're
+  filled in automatically as soon as you select the playlist - no
+  button needed. The "from disc" tag next to a field shows this
+  happened; it flips to "edited" if you change that name yourself.
 - Fill: paste a plain tracklist (one song per line, in the same order
   as the chapters) into the box and click Fill. Leading numbering like
   "1." or "01 -" is stripped automatically.
@@ -167,11 +171,17 @@ COMMON ERRORS
   together, so locating one usually finds its pair automatically too.
 
 IF AN EXTRACTION IS INTERRUPTED
-If the app is closed or crashes after extraction but before splitting
-finishes, the intermediate _atmos_extracted.mkv is left in the work
-folder rather than deleted. Rather than re-running the slow extraction
-step again, split that file directly from the command line with
-split_now.py - see the README for the exact syntax.
+If the app is closed, crashes, or a job is cancelled partway through,
+just select the same source and output folders and click
+Extract && Split again. The app detects the in-progress manifest in
+the work folder and offers to resume exactly where it left off -
+skipping the extraction step entirely if it already finished, and
+skipping any chapters that were already split.
+For advanced/manual recovery (e.g. the manifest was deleted, or
+extraction finished but you want different track names), the
+intermediate _atmos_extracted.mkv is left in the work folder and can
+be split directly from the command line with split_now.py - see the
+README for the exact syntax.
 
 SETTINGS & LOGS
 Tool paths and last-used folders are remembered in
