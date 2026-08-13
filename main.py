@@ -116,6 +116,75 @@ def enable_clipboard(widget: ctk.CTkEntry | ctk.CTkTextbox) -> None:
     widget.bind("<Button-3>", show_menu)
 
 
+REPO_URL = "https://github.com/quinnuk/AtmosTrackSplitter"
+
+HELP_TEXT = """ATMOS TRACK SPLITTER - TIPS & TROUBLESHOOTING
+
+WORKFLOW
+1. Browse to a folder containing a ripped Blu-ray disc (it needs the
+   standard BDMV/PLAYLIST/*.mpls structure - not a flattened single MKV)
+   and click Scan.
+2. The app inspects every playlist and ranks them by likelihood of
+   being "the" Atmos concert/album feature - has an Atmos track, has
+   chapters, includes video, sensible duration. The highest-scoring one
+   is pre-selected; the dropdown shows the reasoning if you want to
+   check its work or pick a different candidate yourself.
+3. Name each chapter, using whichever of the three methods below suits
+   the disc, then click Extract && Split.
+
+NAMING CHAPTERS - THREE WAYS
+- Fill: paste a plain tracklist (one song per line, in the same order
+  as the chapters) into the box and click Fill. Leading numbering like
+  "1." or "01 -" is stripped automatically.
+- Import Tracklist...: reads a tracklist file. Handles plain .txt,
+  .cue, .json, and disc-meta .nfo files. If the app found candidate
+  files sitting in the disc folder (BDInfo.txt, Track Listing.txt,
+  bdmt_*.xml etc), it'll mention them - these usually came bundled
+  with the rip and are normally exactly the right tracklist.
+- Search Online...: looks up the album on MusicBrainz. Good for
+  well-known standard releases. LIMITED/BOUTIQUE EDITIONS (small-run
+  audiophile Blu-ray Pure Audio / Surround Series discs, mail-order
+  exclusives, etc) are very often missing from MusicBrainz, or only
+  the parent CD/digital release is indexed - if the track count shown
+  looks nothing like your chapter count, that's the usual reason.
+  Import Tracklist is more reliable for that kind of disc.
+
+Whichever method you use, nothing is applied until you review and
+accept the proposed matches - matched chapters are pre-checked,
+mismatched/unmatched ones are left for you to decide.
+
+COMMON ERRORS
+- "mkvextract failed" / "Could not read chapters": usually means the
+  selected file wasn't readable as-is (e.g. a corrupted or incomplete
+  rip). Try re-scanning, or check the file plays correctly elsewhere.
+- "X output file(s) already exist": the app never overwrites existing
+  files silently - you'll be asked to confirm before anything in the
+  output folder gets replaced.
+- Tool not found on startup: mkvmerge, mkvextract, ffmpeg, and ffprobe
+  all need to be installed and reachable - either on your system PATH,
+  or pointed at directly via the Browse button in that dialog. MKVToolNix
+  provides mkvmerge/mkvextract together; ffmpeg provides ffmpeg/ffprobe
+  together, so locating one usually finds its pair automatically too.
+
+IF AN EXTRACTION IS INTERRUPTED
+If the app is closed or crashes after extraction but before splitting
+finishes, the intermediate _atmos_extracted.mkv is left in the work
+folder rather than deleted. Rather than re-running the slow extraction
+step again, split that file directly from the command line with
+split_now.py - see the README for the exact syntax.
+
+SETTINGS & LOGS
+Tool paths and last-used folders are remembered in
+%USERPROFILE%\\.atmos_track_splitter\\settings.json. Use "Open Log"
+during/after a run to see exactly what each external tool was told to
+do - the most useful thing to include if you're reporting a bug.
+
+MORE HELP
+Full README, known limitations, and issue tracker: see the other items
+on this Help menu.
+"""
+
+
 class AtmosTrackSplitterApp(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
@@ -138,6 +207,7 @@ class AtmosTrackSplitterApp(ctk.CTk):
 
         self._apply_tool_paths()
         self._build_layout()
+        self._build_menu_bar()
         self.after(200, self._check_tools_on_startup)
 
     def _apply_tool_paths(self) -> None:
@@ -266,6 +336,66 @@ class AtmosTrackSplitterApp(ctk.CTk):
 
         ctk.CTkButton(dialog, text="Continue anyway", command=dialog.destroy).pack(
             pady=(0, 16)
+        )
+
+    # ------------------------------------------------------------------
+    # Help menu
+    # ------------------------------------------------------------------
+
+    def _build_menu_bar(self) -> None:
+        """
+        A native Windows menu bar. customtkinter doesn't provide its own
+        menu bar widget, so this uses plain tkinter's Menu directly - it
+        renders as a normal top-of-window dropdown menu either way.
+        Currently just a single Help menu: in-app tips/troubleshooting,
+        plus links out to the README and issue tracker for anything not
+        covered there.
+        """
+        menu_bar = tk.Menu(self)
+
+        help_menu = tk.Menu(menu_bar, tearoff=0)
+        help_menu.add_command(label="Tips & Troubleshooting", command=self._show_help_dialog)
+        help_menu.add_separator()
+        help_menu.add_command(
+            label="View README on GitHub",
+            command=lambda: webbrowser.open(f"{REPO_URL}#readme"),
+        )
+        help_menu.add_command(
+            label="Report an Issue",
+            command=lambda: webbrowser.open(f"{REPO_URL}/issues/new/choose"),
+        )
+        help_menu.add_separator()
+        help_menu.add_command(label="About", command=self._show_about_dialog)
+        menu_bar.add_cascade(label="Help", menu=help_menu)
+
+        self.config(menu=menu_bar)
+
+    def _show_help_dialog(self) -> None:
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Tips & Troubleshooting")
+        dialog.geometry("640x560")
+        dialog.transient(self)
+        dialog.grab_set()
+
+        textbox = ctk.CTkTextbox(dialog, wrap="word")
+        textbox.pack(fill="both", expand=True, padx=16, pady=(16, 8))
+        textbox.insert("1.0", HELP_TEXT)
+        # Left editable (rather than state="disabled") purely so normal
+        # text selection/copy behaves exactly as expected on every
+        # platform - nothing typed here is read back or saved anywhere,
+        # so there's no real downside to it being technically editable.
+        enable_clipboard(textbox)
+
+        ctk.CTkButton(dialog, text="Close", command=dialog.destroy).pack(pady=(0, 16))
+
+    def _show_about_dialog(self) -> None:
+        messagebox.showinfo(
+            "About Atmos Track Splitter",
+            "Atmos Track Splitter\n\n"
+            "Split a ripped Blu-ray concert/music disc into individual, "
+            "chapter-named Dolby Atmos song files - no re-encoding.\n\n"
+            f"{REPO_URL}",
+            parent=self,
         )
 
     # ------------------------------------------------------------------
