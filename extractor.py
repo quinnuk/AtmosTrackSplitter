@@ -21,6 +21,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import urllib.error
@@ -684,9 +685,16 @@ def _timecode_to_seconds(tc: str) -> float:
 
 def read_chapters(mkv_path: Path, preferred_language: str = "eng") -> list[Chapter]:
     """
-    Extract chapter markers from an MKV (or any mkvextract-readable
-    source, including a Blu-ray .mpls playlist directly) via
+    Extract chapter markers from a real Matroska (.mkv) file via
     `mkvextract chapters -`.
+
+    IMPORTANT: mkvextract can only read chapters from an actual Matroska
+    container. It cannot read a Blu-ray .mpls playlist directly - handing
+    it one fails with "Not a valid Matroska file (no EBML head found)",
+    even though mkvmerge reads the same .mpls fine for scanning/
+    extraction. For a .mpls (or anything else that isn't already a
+    .mkv), use read_chapters_from_source() instead, which handles that
+    conversion.
 
     Also reads each chapter's embedded name, if the source has one: a
     ChapterAtom can carry multiple <ChapterDisplay> blocks (one per
@@ -696,7 +704,13 @@ def read_chapters(mkv_path: Path, preferred_language: str = "eng") -> list[Chapt
     """
     result = _run([TOOL_PATHS["mkvextract"], str(mkv_path), "chapters", "-"], timeout=60)
     if result.returncode != 0:
-        raise RuntimeError(f"mkvextract failed:\n{result.stderr}")
+        # mkvextract doesn't consistently write its error to stderr - some
+        # failure modes (e.g. "not a valid Matroska file") land on stdout
+        # instead, which used to leave the caller with an empty, useless
+        # error message ("mkvextract failed:" and nothing after it).
+        # Including both means the real reason always makes it to the user.
+        detail = result.stderr.strip() or result.stdout.strip() or "(no output from mkvextract)"
+        raise RuntimeError(f"mkvextract failed:\n{detail}")
 
     xml_text = result.stdout
     # Defensive cleanup: strip a UTF-8 BOM (now correctly decoded thanks to
@@ -733,6 +747,42 @@ def read_chapters(mkv_path: Path, preferred_language: str = "eng") -> list[Chapt
             ch.end_seconds = None  # last chapter runs to end of file
 
     return chapters
+
+
+def read_chapters_from_source(
+    source_path: Path, preferred_language: str = "eng"
+) -> list[Chapter]:
+    """
+    Read chapters from any mkvmerge-readable source, including a Blu-ray
+    .mpls playlist - unlike read_chapters(), which only works on an
+    actual .mkv file (see its docstring for why).
+
+    For a .mpls (or anything else that isn't already a .mkv), this asks
+    mkvmerge to remux just the chapter data into a small temporary .mkv
+    in the system temp folder - no video, audio, or subtitle tracks are
+    copied, so this is fast even though the source is a full disc rip -
+    then reads chapters from that via read_chapters(). The temp file is
+    always cleaned up afterwards, whether or not reading succeeds.
+    """
+    if source_path.suffix.lower() == ".mkv":
+        return read_chapters(source_path, preferred_language=preferred_language)
+
+    tmp_path = Path(tempfile.gettempdir()) / f"_chapters_only_{uuid.uuid4().hex}.mkv"
+    args = [
+        TOOL_PATHS["mkvmerge"], "-o", str(tmp_path),
+        "--no-video", "--no-audio", "--no-subtitles",
+        str(source_path),
+    ]
+    result = _run(args, timeout=120)
+    if result.returncode >= 2 or not tmp_path.is_file():
+        detail = result.stderr.strip() or result.stdout.strip() or "(no output from mkvmerge)"
+        raise RuntimeError(
+            f"mkvmerge could not read chapter data from {source_path.name}:\n{detail}"
+        )
+    try:
+        return read_chapters(tmp_path, preferred_language=preferred_language)
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 def _pick_chapter_display(atom: ET.Element, preferred_language: str) -> tuple[str, str]:

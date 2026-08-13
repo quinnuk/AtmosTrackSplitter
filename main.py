@@ -533,15 +533,16 @@ class AtmosTrackSplitterApp(ctk.CTk):
         """
         Read chapter names embedded in the playlist itself, if any, and
         use them to prefill blank naming fields. Runs off the UI thread:
-        this reads directly from the .mpls playlist (mkvextract can read
-        Blu-ray playlists the same way mkvmerge already does for
-        scanning), so it's normally quick - it isn't copying the video or
-        Atmos audio streams - but a slow/network drive could still make it
-        worth not blocking the UI for.
+        mkvextract can't read a .mpls playlist directly (only mkvmerge
+        can), so this goes through read_chapters_from_source(), which
+        remuxes just the chapter data via mkvmerge first - it isn't
+        copying the video or Atmos audio streams, so it's normally quick,
+        but a slow/network drive could still make it worth not blocking
+        the UI for.
         """
         def work() -> None:
             try:
-                chapters = extractor.read_chapters(pl.path)
+                chapters = extractor.read_chapters_from_source(pl.path)
             except Exception:
                 return  # no embedded chapter names available - not fatal, nothing to prefill
             self.after(0, lambda: self._apply_embedded_chapter_names(pl, chapters))
@@ -628,7 +629,7 @@ class AtmosTrackSplitterApp(ctk.CTk):
             # Embedded-chapter prefill hasn't finished loading yet - read
             # directly rather than making the user wait and retry.
             try:
-                chapters = extractor.read_chapters(self.selected_playlist.path)
+                chapters = extractor.read_chapters_from_source(self.selected_playlist.path)
             except Exception as exc:  # noqa: BLE001
                 messagebox.showerror("Could not read chapters", str(exc))
                 return
@@ -785,9 +786,29 @@ class AtmosTrackSplitterApp(ctk.CTk):
         chapters = self.selected_playlist_chapters
         if not chapters:
             try:
-                chapters = extractor.read_chapters(self.selected_playlist.path)
+                chapters = extractor.read_chapters_from_source(self.selected_playlist.path)
             except Exception as exc:  # noqa: BLE001
                 messagebox.showerror("Could not read chapters", str(exc))
+                return
+
+        # MusicBrainz's track count is summed across every medium on the
+        # release, but fetch_musicbrainz_tracklist() only pulls the first
+        # medium's tracks (a single Atmos playlist is one continuous
+        # chapter set). A very different track count from this playlist's
+        # chapter count usually means the wrong release/edition was
+        # picked - flag it up front rather than letting a silent
+        # mismatch fall through to the review dialog.
+        if abs(len(entries) - len(chapters)) > max(2, len(chapters) // 4):
+            proceed = messagebox.askyesno(
+                "Track count mismatch",
+                f"This playlist has {len(chapters)} chapter(s), but the "
+                f"selected MusicBrainz release has {len(entries)} track(s) "
+                f"on its first disc.\n\n"
+                f"This usually means a different edition/release was "
+                f"picked. Continue anyway and review the proposed match?",
+            )
+            if not proceed:
+                self.set_status("Ready.")
                 return
 
         result = extractor.match_tracklist_to_chapters(chapters, entries)
