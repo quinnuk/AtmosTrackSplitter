@@ -214,11 +214,14 @@ class AtmosTrackSplitterApp(ctk.CTk):
         self.chapter_source_labels: dict[int, ctk.CTkLabel] = {}
         self.cancel_event: threading.Event | None = None
         self.current_log_path: Path | None = None
+        self._resumable_manifest: extractor.JobManifest | None = None
+        self._resumable_work_folder: Path | None = None
 
         self._apply_tool_paths()
         self._build_layout()
         self._build_menu_bar()
         self.after(200, self._check_tools_on_startup)
+        self.after(200, self._refresh_resume_banner)
 
     def _apply_tool_paths(self) -> None:
         """
@@ -414,11 +417,32 @@ class AtmosTrackSplitterApp(ctk.CTk):
 
     def _build_layout(self) -> None:
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(3, weight=1)
+        self.grid_rowconfigure(4, weight=1)
+
+        # --- Resume banner (hidden unless a paused/interrupted job is found) ---
+        self.resume_banner = ctk.CTkFrame(self, fg_color="#3a5f8a")
+        self.resume_banner.grid(row=0, column=0, sticky="ew", padx=16, pady=(16, 0))
+        self.resume_banner.grid_columnconfigure(0, weight=1)
+
+        self.resume_banner_label = ctk.CTkLabel(
+            self.resume_banner, text="", justify="left", wraplength=520, anchor="w",
+            font=ctk.CTkFont(weight="bold"), text_color="white",
+        )
+        self.resume_banner_label.grid(row=0, column=0, sticky="w", padx=(12, 8), pady=10)
+
+        ctk.CTkButton(
+            self.resume_banner, text="Resume Job", width=120, command=self._resume_from_banner,
+        ).grid(row=0, column=1, padx=(0, 8), pady=10)
+        ctk.CTkButton(
+            self.resume_banner, text="Discard && Start Fresh", width=180,
+            fg_color="#a33", hover_color="#822", command=self._discard_resumable_job,
+        ).grid(row=0, column=2, padx=(0, 12), pady=10)
+
+        self.resume_banner.grid_remove()  # shown only once _refresh_resume_banner finds a job
 
         # --- Source folder row ---
         source_frame = ctk.CTkFrame(self)
-        source_frame.grid(row=0, column=0, sticky="ew", padx=16, pady=(16, 8))
+        source_frame.grid(row=1, column=0, sticky="ew", padx=16, pady=(16, 8))
         source_frame.grid_columnconfigure(0, weight=1)
 
         self.source_entry = ctk.CTkEntry(
@@ -428,6 +452,7 @@ class AtmosTrackSplitterApp(ctk.CTk):
         if self.cfg.get("last_source_folder"):
             self.source_entry.insert(0, self.cfg["last_source_folder"])
         enable_clipboard(self.source_entry)
+        self.source_entry.bind("<KeyRelease>", lambda _e: self._refresh_resume_banner())
 
         ctk.CTkButton(source_frame, text="Browse...", width=100, command=self.browse_source).grid(
             row=0, column=1, padx=(0, 8), pady=8
@@ -438,7 +463,7 @@ class AtmosTrackSplitterApp(ctk.CTk):
 
         # --- Playlist selection row ---
         playlist_frame = ctk.CTkFrame(self)
-        playlist_frame.grid(row=1, column=0, sticky="ew", padx=16, pady=8)
+        playlist_frame.grid(row=2, column=0, sticky="ew", padx=16, pady=8)
         playlist_frame.grid_columnconfigure(1, weight=1)
 
         ctk.CTkLabel(playlist_frame, text="Playlist:").grid(row=0, column=0, padx=8, pady=8)
@@ -452,7 +477,7 @@ class AtmosTrackSplitterApp(ctk.CTk):
 
         # --- Paste tracklist row ---
         paste_frame = ctk.CTkFrame(self)
-        paste_frame.grid(row=2, column=0, sticky="ew", padx=16, pady=8)
+        paste_frame.grid(row=3, column=0, sticky="ew", padx=16, pady=8)
         paste_frame.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
@@ -480,11 +505,11 @@ class AtmosTrackSplitterApp(ctk.CTk):
 
         # --- Chapter/track name table (scrollable) ---
         self.chapter_scroll = ctk.CTkScrollableFrame(self, label_text="Chapters / Track Names")
-        self.chapter_scroll.grid(row=3, column=0, sticky="nsew", padx=16, pady=8)
+        self.chapter_scroll.grid(row=4, column=0, sticky="nsew", padx=16, pady=8)
         self.chapter_scroll.grid_columnconfigure(1, weight=1)
         # --- Output folder + run row ---
         bottom_frame = ctk.CTkFrame(self)
-        bottom_frame.grid(row=4, column=0, sticky="ew", padx=16, pady=(8, 16))
+        bottom_frame.grid(row=5, column=0, sticky="ew", padx=16, pady=(8, 16))
         bottom_frame.grid_columnconfigure(0, weight=1)
 
         self.output_entry = ctk.CTkEntry(
@@ -495,6 +520,7 @@ class AtmosTrackSplitterApp(ctk.CTk):
         if self.cfg.get("last_output_folder"):
             self.output_entry.insert(0, self.cfg["last_output_folder"])
         enable_clipboard(self.output_entry)
+        self.output_entry.bind("<KeyRelease>", lambda _e: self._refresh_resume_banner())
 
         ctk.CTkButton(bottom_frame, text="Browse...", width=100, command=self.browse_output).grid(
             row=0, column=1, padx=(0, 8), pady=8
@@ -516,7 +542,7 @@ class AtmosTrackSplitterApp(ctk.CTk):
         self.open_log_button.grid(row=0, column=4, padx=(0, 8), pady=8)
 
         self.status_label = ctk.CTkLabel(self, text="Ready.", anchor="w")
-        self.status_label.grid(row=5, column=0, sticky="ew", padx=16, pady=(0, 12))
+        self.status_label.grid(row=6, column=0, sticky="ew", padx=16, pady=(0, 12))
 
     # ------------------------------------------------------------------
     # Source folder / scanning
@@ -527,6 +553,7 @@ class AtmosTrackSplitterApp(ctk.CTk):
         if folder:
             self.source_entry.delete(0, "end")
             self.source_entry.insert(0, folder)
+            self._refresh_resume_banner()
 
     def scan_folder(self) -> None:
         folder_str = self.source_entry.get().strip()
@@ -564,6 +591,7 @@ class AtmosTrackSplitterApp(ctk.CTk):
         )
 
     def _on_scan_complete(self, playlists: list[extractor.Playlist]) -> None:
+        self._refresh_resume_banner()
         self.playlists = playlists
         if not playlists:
             self.set_status("No playlists found.")
@@ -1085,6 +1113,7 @@ class AtmosTrackSplitterApp(ctk.CTk):
         if folder:
             self.output_entry.delete(0, "end")
             self.output_entry.insert(0, folder)
+            self._refresh_resume_banner()
 
     def start_extraction(self) -> None:
         if not self.selected_playlist or not self.selected_playlist.has_atmos:
@@ -1133,12 +1162,37 @@ class AtmosTrackSplitterApp(ctk.CTk):
         if do_cleanup_first:
             shutil.rmtree(work_folder, ignore_errors=True)
 
+        self._run_extraction_job(
+            playlist=self.selected_playlist,
+            track_names=track_names,
+            work_folder=work_folder,
+            output_folder=output_folder,
+            overwrite_paths=overwrite_paths,
+            resume=resume,
+        )
+
+    def _run_extraction_job(
+        self,
+        playlist: extractor.Playlist,
+        track_names: dict[int, str],
+        work_folder: Path,
+        output_folder: Path,
+        overwrite_paths: set[Path],
+        resume: bool,
+    ) -> None:
+        """
+        Shared job-launch path for both a normal Extract && Split click and
+        a Resume from the banner - both end up here so there's exactly one
+        place that starts the worker thread and wires up progress/cancel/
+        completion handling, instead of two copies that could drift apart.
+        """
         self.cancel_event = threading.Event()
         self.current_log_path = output_folder / "extraction.log"
         self.extract_button.configure(state="disabled", text="Working...")
         self.cancel_button.configure(state="normal", text="Cancel")
         self.open_log_button.configure(state="normal")
-        self.set_status(f"Starting extraction -> {output_folder}")
+        self.resume_banner.grid_remove()  # the job it referred to is now running
+        self.set_status(f"{'Resuming' if resume else 'Starting'} extraction -> {output_folder}")
 
         def progress(msg: str) -> None:
             self.after(0, lambda: self.set_status(msg))
@@ -1146,7 +1200,7 @@ class AtmosTrackSplitterApp(ctk.CTk):
         def work() -> None:
             try:
                 results = extractor.run_full_pipeline(
-                    self.selected_playlist,
+                    playlist,
                     track_names,
                     work_folder=work_folder,
                     output_folder=output_folder,
@@ -1224,7 +1278,8 @@ class AtmosTrackSplitterApp(ctk.CTk):
         self.extract_button.configure(state="normal", text="Extract && Split")
         self.cancel_button.configure(state="disabled", text="Cancel")
         self.cancel_event = None
-        self.set_status("Cancelled. Extracting again to the same folder will offer to resume.")
+        self.set_status("Cancelled - paused job saved. See the Resume banner above.")
+        self._refresh_resume_banner()
 
     def _resolve_output_collisions(
         self, output_folder: Path, track_names: dict[int, str]
@@ -1352,13 +1407,144 @@ class AtmosTrackSplitterApp(ctk.CTk):
         self.cancel_event = None
         self.set_status(f"Done. Wrote {len(results)} files to {self.output_entry.get()}")
         messagebox.showinfo("Done", f"Wrote {len(results)} track files.")
+        self._refresh_resume_banner()
 
     def _on_extraction_failed(self, exc: Exception) -> None:
         self.extract_button.configure(state="normal", text="Extract && Split")
         self.cancel_button.configure(state="disabled", text="Cancel")
         self.cancel_event = None
-        self.set_status("Failed - see error dialog. Extracting again to the same folder will offer to resume.")
+        self.set_status("Failed - paused job saved. See the Resume banner above.")
         messagebox.showerror("Extraction failed", str(exc))
+        self._refresh_resume_banner()
+
+    # ------------------------------------------------------------------
+    # Resume banner
+    # ------------------------------------------------------------------
+
+    def _current_output_folder(self) -> Path | None:
+        """
+        Compute the album output folder the same way start_extraction does,
+        from whatever's currently typed in the source/output fields - used
+        to check for a resumable job before the user has clicked anything.
+        Returns None if either field is empty or the folder name can't be
+        derived (e.g. mid-typing).
+        """
+        output_str = self.output_entry.get().strip()
+        source_str = self.source_entry.get().strip()
+        if not output_str or not source_str:
+            return None
+        try:
+            album_name = extractor.derive_album_folder_name(Path(source_str))
+        except Exception:
+            return None
+        return Path(output_str) / album_name
+
+    def _refresh_resume_banner(self) -> None:
+        """
+        Check whether the current source+output folder combination has an
+        interrupted job waiting in its _work folder, and show/hide the
+        banner accordingly. Called after every action that could change
+        which job is "current" - typing/browsing either folder field,
+        finishing a scan, and after cancel/failure/completion - so the
+        banner never depends on the user remembering to click anything
+        first.
+        """
+        output_folder = self._current_output_folder()
+        manifest = None
+        work_folder = None
+        if output_folder is not None:
+            work_folder = output_folder / "_work"
+            manifest = extractor.read_manifest(work_folder)
+            if manifest is not None and manifest.status == "complete":
+                manifest = None  # finished jobs clean up their own manifest; nothing to resume
+
+        self._resumable_manifest = manifest
+        self._resumable_work_folder = work_folder
+
+        if manifest is None:
+            self.resume_banner.grid_remove()
+            return
+
+        done = len(manifest.completed_outputs)
+        total = len(manifest.chapters) if manifest.chapters else None
+        if total:
+            progress_txt = f"{done} of {total} tracks split"
+        elif manifest.atmos_extracted:
+            progress_txt = "Atmos audio extracted, splitting not started yet"
+        else:
+            progress_txt = "extraction not finished"
+
+        status_txt = {
+            "cancelled": "Paused",
+            "failed": "Interrupted (error)",
+            "extracting": "Interrupted mid-extraction",
+            "splitting": "Interrupted mid-split",
+            "pending": "Not started",
+        }.get(manifest.status, manifest.status)
+
+        album = Path(manifest.output_folder).name
+        self.resume_banner_label.configure(
+            text=f"\u23f8 {status_txt} job found for \u201c{album}\u201d \u2014 {progress_txt}."
+        )
+        self.resume_banner.grid()
+
+    def _resume_from_banner(self) -> None:
+        """
+        Resume the job the banner is currently showing, without requiring
+        the user to have re-scanned the disc or re-selected a playlist
+        first - everything needed is pulled straight from the manifest,
+        including re-inspecting the original playlist directly by path.
+        """
+        manifest = self._resumable_manifest
+        work_folder = self._resumable_work_folder
+        if manifest is None or work_folder is None:
+            return
+
+        try:
+            playlist = extractor.inspect_playlist(Path(manifest.source_playlist))
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror(
+                "Can't resume",
+                f"Couldn't re-read the original playlist to resume:\n{exc}\n\n"
+                "The source disc folder may have moved, been unmounted, or "
+                "been renamed since this job was started.",
+            )
+            return
+
+        # Reflect what's being resumed back into the GUI fields, so the
+        # rest of the window (chapter names, status, Cancel/Open Log) is
+        # consistent with the job that's actually running - not left
+        # showing whatever the user had typed before clicking Resume.
+        track_names = {int(k): v for k, v in manifest.track_names.items()}
+        for idx, var in self.chapter_name_vars.items():
+            if idx in track_names:
+                var.set(track_names[idx])
+
+        self._run_extraction_job(
+            playlist=playlist,
+            track_names=track_names,
+            work_folder=work_folder,
+            output_folder=Path(manifest.output_folder),
+            overwrite_paths=set(),
+            resume=True,
+        )
+
+    def _discard_resumable_job(self) -> None:
+        """Delete the leftover _work folder (manifest + intermediate file) and hide the banner."""
+        work_folder = self._resumable_work_folder
+        if work_folder is None:
+            return
+        proceed = messagebox.askyesno(
+            "Discard paused job?",
+            "This deletes the saved progress for this job, including the "
+            "extracted Atmos audio if that step already finished. Any "
+            "track files already split are NOT deleted - only the "
+            "in-progress checkpoint.\n\nDiscard and start fresh next time?",
+        )
+        if not proceed:
+            return
+        shutil.rmtree(work_folder, ignore_errors=True)
+        self._refresh_resume_banner()
 
     # ------------------------------------------------------------------
 
