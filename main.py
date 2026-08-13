@@ -22,6 +22,7 @@ import tkinter.filedialog as filedialog
 import tkinter.messagebox as messagebox
 import webbrowser
 from pathlib import Path
+from typing import Callable
 
 import customtkinter as ctk
 
@@ -32,16 +33,28 @@ ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
 
-def enable_clipboard(widget: ctk.CTkEntry | ctk.CTkTextbox) -> None:
+def enable_clipboard(
+    widget: ctk.CTkEntry | ctk.CTkTextbox, on_change: "Callable[[], None] | None" = None
+) -> None:
     """
     customtkinter's Entry/Textbox widgets don't reliably inherit the OS's
     default copy/cut/paste keyboard or right-click behaviour on every
     platform/version. This adds both explicitly so Ctrl+V and right-click
     -> Paste always work.
+
+    on_change: if given, called (with a short delay so the widget's own
+    insert/delete has already landed) after a paste or cut actually
+    changes this widget's content. Used so pasting a tracklist auto-fills
+    the chapter table without a separate "Fill" click, without this
+    generic clipboard helper needing to know anything about that.
     """
     # The actual tkinter widget underneath is .entry for CTkEntry-like
     # widgets, or the CTkTextbox itself acts as a Text widget directly.
     target = getattr(widget, "_entry", None) or getattr(widget, "_textbox", None) or widget
+
+    def _notify_change() -> None:
+        if on_change is not None:
+            widget.after(10, on_change)
 
     def paste(_event=None) -> str:
         try:
@@ -55,6 +68,7 @@ def enable_clipboard(widget: ctk.CTkEntry | ctk.CTkTextbox) -> None:
                 widget.insert("insert", clipboard_text)
         except Exception:
             pass
+        _notify_change()
         return "break"
 
     def copy(_event=None) -> str:
@@ -78,6 +92,7 @@ def enable_clipboard(widget: ctk.CTkEntry | ctk.CTkTextbox) -> None:
                 widget.delete(0, "end")
         except Exception:
             pass
+        _notify_change()
         return "break"
 
     def select_all(_event=None) -> str:
@@ -216,6 +231,11 @@ class AtmosTrackSplitterApp(ctk.CTk):
         self.current_log_path: Path | None = None
         self._resumable_manifest: extractor.JobManifest | None = None
         self._resumable_work_folder: Path | None = None
+        self._source_debounce_id: str | None = None
+        self._paste_debounce_id: str | None = None
+        self._last_scanned_folder: Path | None = None
+        self.output_var = ctk.StringVar(value=self.cfg.get("last_output_folder", ""))
+        self._output_editing = not bool(self.cfg.get("last_output_folder"))
 
         self._apply_tool_paths()
         self._build_layout()
@@ -452,13 +472,15 @@ class AtmosTrackSplitterApp(ctk.CTk):
         if self.cfg.get("last_source_folder"):
             self.source_entry.insert(0, self.cfg["last_source_folder"])
         enable_clipboard(self.source_entry)
-        self.source_entry.bind("<KeyRelease>", lambda _e: self._refresh_resume_banner())
+        # No separate "Scan" button: typing/pasting a valid disc folder (or
+        # picking one via Browse) scans it automatically, debounced so a
+        # folder being typed out character-by-character doesn't trigger a
+        # scan attempt on every keystroke. Enter forces it immediately.
+        self.source_entry.bind("<KeyRelease>", self._on_source_entry_changed)
+        self.source_entry.bind("<Return>", lambda _e: self.scan_folder())
 
         ctk.CTkButton(source_frame, text="Browse...", width=100, command=self.browse_source).grid(
             row=0, column=1, padx=(0, 8), pady=8
-        )
-        ctk.CTkButton(source_frame, text="Scan", width=100, command=self.scan_folder).grid(
-            row=0, column=2, padx=(0, 8), pady=8
         )
 
         # --- Playlist selection row ---
@@ -466,7 +488,14 @@ class AtmosTrackSplitterApp(ctk.CTk):
         playlist_frame.grid(row=2, column=0, sticky="ew", padx=16, pady=8)
         playlist_frame.grid_columnconfigure(1, weight=1)
 
-        ctk.CTkLabel(playlist_frame, text="Playlist:").grid(row=0, column=0, padx=8, pady=8)
+        # The dropdown itself is only shown when there's a real choice to
+        # make (2+ playlists that both look like plausible candidates).
+        # For the common case - one obvious Atmos playlist - showing a
+        # decision UI for a non-decision is friction, not safety; the
+        # reasoning label below stays visible either way so the pick is
+        # never hidden, just not gated behind an unnecessary dropdown.
+        self.playlist_select_label = ctk.CTkLabel(playlist_frame, text="Playlist:")
+        self.playlist_select_label.grid(row=0, column=0, padx=8, pady=8)
         self.playlist_option = ctk.CTkOptionMenu(
             playlist_frame, values=["(scan a folder first)"], command=self.on_playlist_selected
         )
@@ -475,6 +504,9 @@ class AtmosTrackSplitterApp(ctk.CTk):
         self.playlist_info_label = ctk.CTkLabel(playlist_frame, text="", justify="left", wraplength=740)
         self.playlist_info_label.grid(row=1, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 8))
 
+        self.playlist_select_label.grid_remove()
+        self.playlist_option.grid_remove()
+
         # --- Paste tracklist row ---
         paste_frame = ctk.CTkFrame(self)
         paste_frame.grid(row=3, column=0, sticky="ew", padx=16, pady=8)
@@ -482,7 +514,7 @@ class AtmosTrackSplitterApp(ctk.CTk):
 
         ctk.CTkLabel(
             paste_frame,
-            text="Paste tracklist (one song per line, in order) then click Fill:",
+            text="Paste tracklist (one song per line, in order) - fills the chapters below automatically:",
         ).grid(row=0, column=0, sticky="w", padx=8, pady=(8, 0))
 
         paste_row = ctk.CTkFrame(paste_frame, fg_color="transparent")
@@ -491,17 +523,17 @@ class AtmosTrackSplitterApp(ctk.CTk):
 
         self.paste_textbox = ctk.CTkTextbox(paste_row, height=70)
         self.paste_textbox.grid(row=0, column=0, sticky="ew")
-        enable_clipboard(self.paste_textbox)
+        # Paste/cut (mouse or keyboard) and ordinary typing all funnel into
+        # the same debounced auto-fill - no separate "Fill" click needed.
+        enable_clipboard(self.paste_textbox, on_change=self._debounced_fill_from_paste)
+        self.paste_textbox.bind("<KeyRelease>", lambda _e: self._debounced_fill_from_paste())
 
-        ctk.CTkButton(paste_row, text="Fill", width=80, command=self.fill_from_paste).grid(
-            row=0, column=1, padx=(8, 0)
-        )
         ctk.CTkButton(
             paste_row, text="Import Tracklist...", width=150, command=self.import_tracklist
-        ).grid(row=0, column=2, padx=(8, 0))
+        ).grid(row=0, column=1, padx=(8, 0))
         ctk.CTkButton(
             paste_row, text="Search Online...", width=140, command=self.search_online_tracklist
-        ).grid(row=0, column=3, padx=(8, 0))
+        ).grid(row=0, column=2, padx=(8, 0))
 
         # --- Chapter/track name table (scrollable) ---
         self.chapter_scroll = ctk.CTkScrollableFrame(self, label_text="Chapters / Track Names")
@@ -512,34 +544,64 @@ class AtmosTrackSplitterApp(ctk.CTk):
         bottom_frame.grid(row=5, column=0, sticky="ew", padx=16, pady=(8, 16))
         bottom_frame.grid_columnconfigure(0, weight=1)
 
+        # The output folder rarely changes run to run, so once one is set
+        # it's shown as a compact "Output: <path>  Change" line instead of
+        # a full entry+browse row demanding review on every single run.
+        # The full row only reappears on first run (nothing set yet) or
+        # when "Change" is clicked.
+        self.output_compact_frame = ctk.CTkFrame(bottom_frame, fg_color="transparent")
+        self.output_compact_frame.grid(row=0, column=0, sticky="ew")
+        self.output_compact_frame.grid_columnconfigure(0, weight=1)
+
+        self.output_compact_label = ctk.CTkLabel(
+            self.output_compact_frame, text="", anchor="w", justify="left"
+        )
+        self.output_compact_label.grid(row=0, column=0, sticky="w", padx=(8, 8), pady=8)
+        ctk.CTkButton(
+            self.output_compact_frame, text="Change", width=80, fg_color="transparent",
+            border_width=1, command=self._start_editing_output,
+        ).grid(row=0, column=1, padx=(0, 8), pady=8)
+
+        self.output_edit_frame = ctk.CTkFrame(bottom_frame, fg_color="transparent")
+        self.output_edit_frame.grid(row=0, column=0, sticky="ew")
+        self.output_edit_frame.grid_columnconfigure(0, weight=1)
+
         self.output_entry = ctk.CTkEntry(
-            bottom_frame,
+            self.output_edit_frame,
+            textvariable=self.output_var,
             placeholder_text="Music library folder (an album subfolder is created automatically)...",
         )
         self.output_entry.grid(row=0, column=0, sticky="ew", padx=(8, 8), pady=8)
-        if self.cfg.get("last_output_folder"):
-            self.output_entry.insert(0, self.cfg["last_output_folder"])
         enable_clipboard(self.output_entry)
-        self.output_entry.bind("<KeyRelease>", lambda _e: self._refresh_resume_banner())
+        self.output_var.trace_add("write", lambda *_a: self._refresh_resume_banner())
 
-        ctk.CTkButton(bottom_frame, text="Browse...", width=100, command=self.browse_output).grid(
+        ctk.CTkButton(self.output_edit_frame, text="Browse...", width=100, command=self.browse_output).grid(
             row=0, column=1, padx=(0, 8), pady=8
         )
+        ctk.CTkButton(
+            self.output_edit_frame, text="Done", width=70, command=self._stop_editing_output,
+        ).grid(row=0, column=2, padx=(0, 8), pady=8)
+
+        controls_row = ctk.CTkFrame(bottom_frame, fg_color="transparent")
+        controls_row.grid(row=1, column=0, sticky="ew")
+
         self.extract_button = ctk.CTkButton(
-            bottom_frame, text="Extract & Split", width=140, command=self.start_extraction
+            controls_row, text="Extract & Split", width=140, command=self.start_extraction
         )
-        self.extract_button.grid(row=0, column=2, padx=(0, 8), pady=8)
+        self.extract_button.grid(row=0, column=0, padx=(8, 8), pady=(0, 8))
 
         self.cancel_button = ctk.CTkButton(
-            bottom_frame, text="Cancel", width=90, fg_color="#a33", hover_color="#822",
+            controls_row, text="Cancel", width=90, fg_color="#a33", hover_color="#822",
             command=self.cancel_extraction, state="disabled",
         )
-        self.cancel_button.grid(row=0, column=3, padx=(0, 8), pady=8)
+        self.cancel_button.grid(row=0, column=1, padx=(0, 8), pady=(0, 8))
 
         self.open_log_button = ctk.CTkButton(
-            bottom_frame, text="Open Log", width=100, command=self.open_log, state="disabled",
+            controls_row, text="Open Log", width=100, command=self.open_log, state="disabled",
         )
-        self.open_log_button.grid(row=0, column=4, padx=(0, 8), pady=8)
+        self.open_log_button.grid(row=0, column=2, padx=(0, 8), pady=(0, 8))
+
+        self._refresh_output_display()
 
         self.status_label = ctk.CTkLabel(self, text="Ready.", anchor="w")
         self.status_label.grid(row=6, column=0, sticky="ew", padx=16, pady=(0, 12))
@@ -554,6 +616,33 @@ class AtmosTrackSplitterApp(ctk.CTk):
             self.source_entry.delete(0, "end")
             self.source_entry.insert(0, folder)
             self._refresh_resume_banner()
+            self.scan_folder()
+
+    def _on_source_entry_changed(self, _event=None) -> None:
+        self._refresh_resume_banner()
+        if self._source_debounce_id is not None:
+            self.after_cancel(self._source_debounce_id)
+        self._source_debounce_id = self.after(500, self._autoscan_if_valid)
+
+    def _autoscan_if_valid(self) -> None:
+        """
+        Fires ~500ms after the source field stops changing. Silently does
+        nothing if the folder isn't (yet) a valid disc folder - the user
+        might still be mid-paste or mid-type - rather than popping an
+        error dialog on every keystroke. Also skips re-scanning a folder
+        that was just scanned, so finishing a paste doesn't trigger a
+        second scan on top of the one Enter or Browse already started.
+        """
+        self._source_debounce_id = None
+        folder_str = self.source_entry.get().strip()
+        if not folder_str:
+            return
+        folder = Path(folder_str)
+        if not (folder / "BDMV" / "PLAYLIST").is_dir():
+            return
+        if folder == self._last_scanned_folder:
+            return
+        self.scan_folder()
 
     def scan_folder(self) -> None:
         folder_str = self.source_entry.get().strip()
@@ -569,6 +658,7 @@ class AtmosTrackSplitterApp(ctk.CTk):
             return
 
         self.disc_folder = folder
+        self._last_scanned_folder = folder
         self.set_status(f"Scanning playlists in {folder.name}...")
         settings.update(last_source_folder=str(folder))
 
@@ -610,6 +700,21 @@ class AtmosTrackSplitterApp(ctk.CTk):
         self.playlist_option.set(labels[0])
         self.on_playlist_selected(labels[0])
 
+        # Only ask the user to choose when there's a real choice: 2+
+        # playlists that both have Atmos and aren't flagged as a
+        # duplicate/alternate angle of each other. Otherwise the dropdown
+        # is a decision UI for a non-decision, so it stays hidden - the
+        # reasoning label below it is never hidden either way.
+        real_candidates = [
+            s for s in self.playlist_scores if s.playlist.has_atmos and s.duplicate_of is None
+        ]
+        if len(real_candidates) > 1:
+            self.playlist_select_label.grid()
+            self.playlist_option.grid()
+        else:
+            self.playlist_select_label.grid_remove()
+            self.playlist_option.grid_remove()
+
         top = self.playlist_scores[0]
         if top.playlist.has_atmos:
             status = f"Best candidate: {top.playlist.path.name} (score {top.score:.0f}) - review below."
@@ -645,7 +750,13 @@ class AtmosTrackSplitterApp(ctk.CTk):
         info_lines = [f"{len(pl.tracks)} tracks, {pl.chapter_count} chapters."]
         if pl.duration_seconds:
             info_lines[0] += f" Runs {pl.duration_seconds / 60:.0f} minutes."
-        info_lines.append("Why this ranking:")
+        real_candidates = [
+            s for s in self.playlist_scores if s.playlist.has_atmos and s.duplicate_of is None
+        ]
+        if len(real_candidates) > 1:
+            info_lines.append("Why this ranking:")
+        else:
+            info_lines.append("Why this one was picked automatically:")
         info_lines.extend(f"  - {r}" for r in score.reasons)
         self.playlist_info_label.configure(text="\n".join(info_lines))
 
@@ -744,6 +855,15 @@ class AtmosTrackSplitterApp(ctk.CTk):
             lbl.configure(text="edited" if v.get() != baseline else "from disc")
 
         var.trace_add("write", on_change)
+
+    def _debounced_fill_from_paste(self) -> None:
+        if self._paste_debounce_id is not None:
+            self.after_cancel(self._paste_debounce_id)
+        self._paste_debounce_id = self.after(300, self._do_fill_from_paste)
+
+    def _do_fill_from_paste(self) -> None:
+        self._paste_debounce_id = None
+        self.fill_from_paste()
 
     def fill_from_paste(self) -> None:
         text = self.paste_textbox.get("1.0", "end").strip()
@@ -1111,9 +1231,33 @@ class AtmosTrackSplitterApp(ctk.CTk):
     def browse_output(self) -> None:
         folder = filedialog.askdirectory(title="Select output folder")
         if folder:
-            self.output_entry.delete(0, "end")
-            self.output_entry.insert(0, folder)
+            self.output_var.set(folder)
             self._refresh_resume_banner()
+            self._stop_editing_output()
+
+    def _refresh_output_display(self) -> None:
+        """
+        Show the compact "Output: <path>  Change" line whenever there's a
+        remembered folder and the user isn't actively editing it; show the
+        full entry+Browse row otherwise (first run, or "Change" clicked).
+        """
+        value = self.output_var.get().strip()
+        if value and not self._output_editing:
+            self.output_compact_label.configure(text=f"Output: {value}")
+            self.output_edit_frame.grid_remove()
+            self.output_compact_frame.grid()
+        else:
+            self.output_compact_frame.grid_remove()
+            self.output_edit_frame.grid()
+
+    def _start_editing_output(self) -> None:
+        self._output_editing = True
+        self._refresh_output_display()
+        self.output_entry.focus_set()
+
+    def _stop_editing_output(self) -> None:
+        self._output_editing = False
+        self._refresh_output_display()
 
     def start_extraction(self) -> None:
         if not self.selected_playlist or not self.selected_playlist.has_atmos:
@@ -1131,13 +1275,14 @@ class AtmosTrackSplitterApp(ctk.CTk):
             if not proceed:
                 return
 
-        output_str = self.output_entry.get().strip()
+        output_str = self.output_var.get().strip()
         if not output_str:
             messagebox.showwarning("No output folder", "Pick an output folder first.")
             return
 
         library_folder = Path(output_str)
         settings.update(last_output_folder=str(library_folder))
+        self._stop_editing_output()
 
         source_folder = Path(self.source_entry.get().strip())
         album_name = extractor.derive_album_folder_name(source_folder)
@@ -1333,8 +1478,7 @@ class AtmosTrackSplitterApp(ctk.CTk):
                 source_folder = Path(self.source_entry.get().strip())
                 album_name = extractor.derive_album_folder_name(source_folder)
                 output_folder = Path(new_library_folder) / album_name
-                self.output_entry.delete(0, "end")
-                self.output_entry.insert(0, new_library_folder)
+                self.output_var.set(new_library_folder)
                 continue
             if choice == "overwrite":
                 return output_folder, {p.path for p in colliding}
@@ -1405,7 +1549,7 @@ class AtmosTrackSplitterApp(ctk.CTk):
         self.extract_button.configure(state="normal", text="Extract & Split")
         self.cancel_button.configure(state="disabled", text="Cancel")
         self.cancel_event = None
-        self.set_status(f"Done. Wrote {len(results)} files to {self.output_entry.get()}")
+        self.set_status(f"Done. Wrote {len(results)} files to {self.output_var.get()}")
         messagebox.showinfo("Done", f"Wrote {len(results)} track files.")
         self._refresh_resume_banner()
 
@@ -1429,7 +1573,7 @@ class AtmosTrackSplitterApp(ctk.CTk):
         Returns None if either field is empty or the folder name can't be
         derived (e.g. mid-typing).
         """
-        output_str = self.output_entry.get().strip()
+        output_str = self.output_var.get().strip()
         source_str = self.source_entry.get().strip()
         if not output_str or not source_str:
             return None
