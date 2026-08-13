@@ -10,6 +10,11 @@
 
 [![Atmos Track Splitter Screenshot](https://github.com/quinnuk/AtmosTrackSplitter/raw/main/screenshot.png)](https://github.com/quinnuk/AtmosTrackSplitter/blob/main/screenshot.png)
 
+<!-- TODO: screenshot.png is from before the main.py redesign - it still shows
+     the old Scan/Fill buttons and the always-visible output row. Retake it
+     against the current build before the next release. -->
+
+
 <a href="https://buymeacoffee.com/quinnuk" target="_blank">
   <img src="https://cdn.buymeacoffee.com/buttons/default-orange.png" alt="Buy Me A Coffee" height="60" width="217">
 </a>
@@ -53,8 +58,8 @@ Atmos Track Splitter automates the whole thing: point it at the ripped disc fold
 
 ## Features
 
-- 🔍 **Auto-detects the right playlist** — scans every `.mpls` playlist and scores each one (Atmos track present, chapter count, video track, duration) rather than just grabbing the first Atmos match, and explains its reasoning so you can sanity-check or override the pick. Near-identical playlists (alternate angles, region variants) are automatically flagged as likely duplicates instead of shown as separate top candidates.
-- 📝 **Four ways to name tracks** — paste a plain list and click Fill; import a tracklist file (`.txt`, `.nfo`, `.cue`, or a saved `.tracklist.json`); pull in whatever chapter names are already embedded in the disc; or look the album up on **MusicBrainz** and match its tracklist to your chapters automatically. Every method shows a review screen before anything is applied — matched chapters pre-checked, mismatches flagged, nothing silently overwritten.
+- 🔍 **Auto-detects the right playlist** — scans every `.mpls` playlist and scores each one (Atmos track present, chapter count, video track, duration) rather than just grabbing the first Atmos match, and explains its reasoning so you can sanity-check the pick. The playlist dropdown itself only appears when there are genuinely two or more plausible candidates to choose between; for the common case of one clear Atmos playlist it's picked automatically and the reasoning is shown inline instead. Near-identical playlists (alternate angles, region variants) are automatically flagged as likely duplicates instead of shown as separate top candidates.
+- 📝 **Four ways to name tracks** — paste a plain list and it fills the chapter table automatically as you type or paste; import a tracklist file (`.txt`, `.nfo`, `.cue`, or a saved `.tracklist.json`); pull in whatever chapter names are already embedded in the disc; or look the album up on **MusicBrainz** and match its tracklist to your chapters automatically. Every method shows a review screen before anything is applied — matched chapters pre-checked, mismatches flagged, nothing silently overwritten.
 - 📂 **Finds sidecar tracklists for you** — if a `.txt`/`.nfo`/`.cue` tracklist is already sitting in the disc rip folder, the app tells you so you don't have to go looking.
 - ⏸️ **Resumable, cancel-safe jobs** — extraction progress is checkpointed to a manifest, so a crash, a cancel, or a closed app mid-job doesn't mean starting over; relaunching against the same output folder offers to resume exactly where it left off.
 - 📋 **Per-job extraction log** — every run writes an `extraction.log` you can open with one click, showing exactly what each external tool was told to do — the single most useful thing to attach to a bug report.
@@ -62,7 +67,8 @@ Atmos Track Splitter automates the whole thing: point it at the ripped disc fold
 - ✂️ **No re-encoding** — stream-copies video + Atmos audio only; the object-based Atmos mix stays bit-exact.
 - 📺 **Keeps the video track** — so playback on a TV shows the concert, not a black screen.
 - 📁 **Clean output, never overwritten silently** — a sensibly-named album folder, one file per song, and a confirmation before any existing output file is replaced.
-- 💾 **Remembers your settings** — last-used folders and tool paths persist between runs.
+- 💾 **Remembers your settings** — last-used folders and tool paths persist between runs; once an output folder's been used, it's shown as a compact one-line summary instead of asking you to re-review it every run (a "Change" link is right there if you need it).
+- ⚡ **Scans as you go** — point the source field at a disc folder (type, paste, or Browse) and it scans automatically; no separate Scan button to remember to click.
 - 🪟 **Runs standalone** — build a windowed `.exe` with no attached console, so closing the terminal (or just double-clicking it) never kills a mid-extraction job.
 - ❓ **Built-in Help menu** — tips and troubleshooting live in the app itself (Help → Tips & Troubleshooting), alongside quick links to this README and the issue tracker.
 
