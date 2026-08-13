@@ -130,7 +130,7 @@ WORKFLOW
    is pre-selected; the dropdown shows the reasoning if you want to
    check its work or pick a different candidate yourself.
 3. Name each chapter, using whichever of the four methods below suits
-   the disc, then click Extract && Split.
+   the disc, then click Extract & Split.
 
 NAMING CHAPTERS - FOUR WAYS
 - From disc: if the playlist has chapter names embedded on it, they're
@@ -173,7 +173,7 @@ COMMON ERRORS
 IF AN EXTRACTION IS INTERRUPTED
 If the app is closed, crashes, or a job is cancelled partway through,
 just select the same source and output folders and click
-Extract && Split again. The app detects the in-progress manifest in
+Extract & Split again. The app detects the in-progress manifest in
 the work folder and offers to resume exactly where it left off -
 skipping the extraction step entirely if it already finished, and
 skipping any chapters that were already split.
@@ -434,7 +434,7 @@ class AtmosTrackSplitterApp(ctk.CTk):
             self.resume_banner, text="Resume Job", width=120, command=self._resume_from_banner,
         ).grid(row=0, column=1, padx=(0, 8), pady=10)
         ctk.CTkButton(
-            self.resume_banner, text="Discard && Start Fresh", width=180,
+            self.resume_banner, text="Discard & Start Fresh", width=180,
             fg_color="#a33", hover_color="#822", command=self._discard_resumable_job,
         ).grid(row=0, column=2, padx=(0, 12), pady=10)
 
@@ -526,7 +526,7 @@ class AtmosTrackSplitterApp(ctk.CTk):
             row=0, column=1, padx=(0, 8), pady=8
         )
         self.extract_button = ctk.CTkButton(
-            bottom_frame, text="Extract && Split", width=140, command=self.start_extraction
+            bottom_frame, text="Extract & Split", width=140, command=self.start_extraction
         )
         self.extract_button.grid(row=0, column=2, padx=(0, 8), pady=8)
 
@@ -1181,7 +1181,7 @@ class AtmosTrackSplitterApp(ctk.CTk):
         resume: bool,
     ) -> None:
         """
-        Shared job-launch path for both a normal Extract && Split click and
+        Shared job-launch path for both a normal Extract & Split click and
         a Resume from the banner - both end up here so there's exactly one
         place that starts the worker thread and wires up progress/cancel/
         completion handling, instead of two copies that could drift apart.
@@ -1275,7 +1275,7 @@ class AtmosTrackSplitterApp(ctk.CTk):
         return (True, False) if choice else (False, True)
 
     def _on_extraction_cancelled(self) -> None:
-        self.extract_button.configure(state="normal", text="Extract && Split")
+        self.extract_button.configure(state="normal", text="Extract & Split")
         self.cancel_button.configure(state="disabled", text="Cancel")
         self.cancel_event = None
         self.set_status("Cancelled - paused job saved. See the Resume banner above.")
@@ -1402,7 +1402,7 @@ class AtmosTrackSplitterApp(ctk.CTk):
         return result["choice"]
 
     def _on_extraction_complete(self, results: list[Path]) -> None:
-        self.extract_button.configure(state="normal", text="Extract && Split")
+        self.extract_button.configure(state="normal", text="Extract & Split")
         self.cancel_button.configure(state="disabled", text="Cancel")
         self.cancel_event = None
         self.set_status(f"Done. Wrote {len(results)} files to {self.output_entry.get()}")
@@ -1410,7 +1410,7 @@ class AtmosTrackSplitterApp(ctk.CTk):
         self._refresh_resume_banner()
 
     def _on_extraction_failed(self, exc: Exception) -> None:
-        self.extract_button.configure(state="normal", text="Extract && Split")
+        self.extract_button.configure(state="normal", text="Extract & Split")
         self.cancel_button.configure(state="disabled", text="Cancel")
         self.cancel_event = None
         self.set_status("Failed - paused job saved. See the Resume banner above.")
