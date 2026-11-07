@@ -164,13 +164,15 @@ NAMING CHAPTERS - FOUR WAYS
   files sitting in the disc folder (BDInfo.txt, Track Listing.txt,
   bdmt_*.xml etc), it'll mention them - these usually came bundled
   with the rip and are normally exactly the right tracklist.
-- Search Online...: looks up the album on MusicBrainz. Good for
-  well-known standard releases. LIMITED/BOUTIQUE EDITIONS (small-run
-  audiophile Blu-ray Pure Audio / Surround Series discs, mail-order
-  exclusives, etc) are very often missing from MusicBrainz, or only
-  the parent CD/digital release is indexed - if the track count shown
-  looks nothing like your chapter count, that's the usual reason.
-  Import Tracklist is more reliable for that kind of disc.
+- MusicBrainz...: searches MusicBrainz and chooses the most plausible
+  release medium by comparing its track count with your Atmos chapters,
+  preferring Blu-ray when counts tie.
+- Discogs...: optional second catalogue for editions missing from
+  MusicBrainz. It needs a free Discogs personal access token. Results are
+  ranked by chapter-count match and Blu-ray format, then reviewed before
+  names are applied. Boutique Blu-ray editions may still be absent from
+  both catalogues; bundled sidecar tracklists or a text file remain the
+  dependable fallback.
 
 Whichever method you use, nothing is applied until you review and
 accept the proposed matches - matched chapters are pre-checked,
@@ -536,8 +538,11 @@ class AtmosTrackSplitterApp(ctk.CTk):
             paste_row, text="Import Tracklist...", width=150, command=self.import_tracklist
         ).grid(row=0, column=1, padx=(8, 0))
         ctk.CTkButton(
-            paste_row, text="Search Online...", width=140, command=self.search_online_tracklist
+            paste_row, text="MusicBrainz...", width=125, command=self.search_online_tracklist
         ).grid(row=0, column=2, padx=(8, 0))
+        ctk.CTkButton(
+            paste_row, text="Discogs...", width=105, command=self.search_discogs_tracklist
+        ).grid(row=0, column=3, padx=(8, 0))
 
         # --- Chapter/track name table (scrollable) ---
         self.chapter_scroll = ctk.CTkScrollableFrame(self, label_text="Chapters / Track Names")
@@ -838,14 +843,26 @@ class AtmosTrackSplitterApp(ctk.CTk):
         if self.selected_playlist is not pl:
             return  # user already moved on to a different playlist selection
         self.selected_playlist_chapters = chapters
-        for ch in chapters:
-            if ch.index not in self.chapter_name_vars or not ch.embedded_name:
+        embedded_names = [ch for ch in chapters if ch.embedded_name.strip()]
+        meaningful_names = [
+            ch for ch in embedded_names
+            if not extractor.is_generic_chapter_name(ch.embedded_name, ch.index)
+        ]
+
+        for ch in meaningful_names:
+            if ch.index not in self.chapter_name_vars:
                 continue
             var = self.chapter_name_vars[ch.index]
             if var.get().strip():
                 continue  # already has a name (preserved or hand-typed) - don't clobber it
             var.set(ch.embedded_name)
             self._mark_chapter_source(ch.index, ch.embedded_name)
+
+        if embedded_names and not meaningful_names:
+            self.set_status(
+                "The disc has chapter markers, but only generic labels (e.g. Chapter 01); "
+                "no song titles were embedded."
+            )
 
     def _mark_chapter_source(self, index: int, baseline_value: str) -> None:
         """Label a chapter's name as auto-filled, and flip the label to 'edited' if the user changes it."""
@@ -1039,6 +1056,133 @@ class AtmosTrackSplitterApp(ctk.CTk):
 
         threading.Thread(target=work, daemon=True).start()
 
+    def search_discogs_tracklist(self) -> None:
+        if not self.selected_playlist:
+            messagebox.showwarning("No playlist selected", "Select a playlist first.")
+            return
+        artist_guess, album_guess, year_guess = "", "", None
+        if self.disc_folder is not None:
+            artist_guess, album_guess, year_guess = extractor.guess_artist_album_year(self.disc_folder)
+        search_input = self._show_discogs_search_dialog(artist_guess, album_guess, year_guess)
+        if search_input is None:
+            return
+        artist, album, year, token = search_input
+        self.set_status(f"Searching Discogs for {artist} - {album}...")
+        expected_count = len(self.selected_playlist_chapters)
+
+        def work() -> None:
+            try:
+                candidates = extractor.search_discogs_releases(
+                    artist, album, year, token, expected_track_count=expected_count or None
+                )
+            except Exception as exc:  # noqa: BLE001
+                self.after(0, lambda exc=exc: self._on_musicbrainz_error(exc))
+                return
+            self.after(0, lambda: self._on_discogs_search_complete(candidates))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _show_discogs_search_dialog(
+        self, artist_guess: str, album_guess: str, year_guess: int | None
+    ) -> tuple[str, str, int | None, str] | None:
+        outcome: dict[str, tuple[str, str, int | None, str] | None] = {"result": None}
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Search Discogs")
+        dialog.geometry("480x310")
+        dialog.transient(self)
+        dialog.grab_set()
+
+        ctk.CTkLabel(dialog, text="Artist:").grid(row=0, column=0, sticky="w", padx=16, pady=(16, 4))
+        artist_var = ctk.StringVar(value=artist_guess)
+        ctk.CTkEntry(dialog, textvariable=artist_var, width=300).grid(row=0, column=1, padx=16, pady=(16, 4))
+        ctk.CTkLabel(dialog, text="Album:").grid(row=1, column=0, sticky="w", padx=16, pady=4)
+        album_var = ctk.StringVar(value=album_guess)
+        ctk.CTkEntry(dialog, textvariable=album_var, width=300).grid(row=1, column=1, padx=16, pady=4)
+        ctk.CTkLabel(dialog, text="Year (optional):").grid(row=2, column=0, sticky="w", padx=16, pady=4)
+        year_var = ctk.StringVar(value=str(year_guess) if year_guess else "")
+        ctk.CTkEntry(dialog, textvariable=year_var, width=100).grid(row=2, column=1, sticky="w", padx=16, pady=4)
+        ctk.CTkLabel(dialog, text="Discogs personal access token:").grid(row=3, column=0, sticky="w", padx=16, pady=4)
+        token_var = ctk.StringVar(value=self.cfg.get("discogs_token", ""))
+        ctk.CTkEntry(dialog, textvariable=token_var, width=300, show="•").grid(row=3, column=1, padx=16, pady=4)
+        ctk.CTkLabel(
+            dialog,
+            text="The token is saved locally in your Windows user settings (not in GitHub). It is stored as plain text, so keep your Windows account secure.",
+            text_color="gray60", wraplength=430, justify="left",
+        ).grid(row=4, column=0, columnspan=2, sticky="w", padx=16, pady=(4, 0))
+        ctk.CTkButton(
+            dialog, text="Get a Discogs token",
+            command=lambda: webbrowser.open("https://www.discogs.com/settings/developers"),
+        ).grid(row=5, column=0, columnspan=2, pady=8)
+
+        def search() -> None:
+            artist, album, token = artist_var.get().strip(), album_var.get().strip(), token_var.get().strip()
+            if not artist or not album or not token:
+                messagebox.showwarning("Missing information", "Artist, album and Discogs token are required.", parent=dialog)
+                return
+            year_text = year_var.get().strip()
+            year = int(year_text) if year_text.isdigit() else None
+            settings.update(discogs_token=token)
+            self.cfg["discogs_token"] = token
+            outcome["result"] = (artist, album, year, token)
+            dialog.destroy()
+
+        buttons = ctk.CTkFrame(dialog, fg_color="transparent")
+        buttons.grid(row=6, column=0, columnspan=2, pady=12)
+        ctk.CTkButton(buttons, text="Cancel", command=dialog.destroy, width=100).pack(side="left", padx=6)
+        ctk.CTkButton(buttons, text="Search", command=search, width=100).pack(side="left", padx=6)
+        dialog.wait_window()
+        return outcome["result"]
+
+    def _on_discogs_search_complete(self, candidates: list[extractor.DiscogsCandidate]) -> None:
+        if not candidates:
+            self.set_status("No Discogs results found.")
+            messagebox.showinfo("No results", "No matching releases found on Discogs.")
+            return
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Discogs results - best chapter-count matches first")
+        dialog.geometry("620x440")
+        dialog.transient(self)
+        dialog.grab_set()
+        ctk.CTkLabel(
+            dialog, text=f"{len(candidates)} release(s) found - best chapter-count matches first:",
+            font=ctk.CTkFont(weight="bold"),
+        ).pack(padx=16, pady=(16, 8), anchor="w")
+        scroll = ctk.CTkScrollableFrame(dialog)
+        scroll.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+        selected = tk.IntVar(value=0)
+        for i, candidate in enumerate(candidates):
+            label = f"{candidate.artist} - {candidate.title}"
+            if candidate.date:
+                label += f" ({candidate.date})"
+            label += f", {candidate.track_count} tracks"
+            if candidate.format_hint:
+                label += f" [{candidate.format_hint}]"
+            ctk.CTkRadioButton(scroll, text=label, variable=selected, value=i).pack(anchor="w", pady=4, padx=4)
+        outcome: dict[str, int | None] = {"index": None}
+        buttons = ctk.CTkFrame(dialog, fg_color="transparent")
+        buttons.pack(pady=(0, 16))
+        ctk.CTkButton(buttons, text="Cancel", command=dialog.destroy, width=100).pack(side="left", padx=6)
+        def use_selected() -> None:
+            outcome["index"] = selected.get()
+            dialog.destroy()
+        ctk.CTkButton(buttons, text="Use Selected", command=use_selected, width=130).pack(side="left", padx=6)
+        dialog.wait_window()
+        if outcome["index"] is None:
+            return
+        chosen = candidates[outcome["index"]]
+        chapters = self.selected_playlist_chapters
+        result = extractor.match_tracklist_to_chapters(chapters, chosen.entries)
+        accepted = self._show_tracklist_review_dialog(f"Discogs: {chosen.title}", result)
+        if not accepted:
+            return
+        for index, name in accepted.items():
+            if index in self.chapter_name_vars:
+                self.chapter_name_vars[index].set(name)
+                label = self.chapter_source_labels.get(index)
+                if label is not None:
+                    label.configure(text="Discogs")
+        self.set_status(f"Imported {len(accepted)} track name(s) from Discogs.")
+
     def _on_musicbrainz_error(self, exc: Exception) -> None:
         self.set_status("MusicBrainz lookup failed.")
         messagebox.showerror("MusicBrainz lookup failed", str(exc))
@@ -1054,10 +1198,14 @@ class AtmosTrackSplitterApp(ctk.CTk):
             return
 
         self.set_status(f"Fetching tracklist for {chosen.title}...")
+        expected_count = len(self.selected_playlist_chapters)
 
         def work() -> None:
             try:
-                entries = extractor.fetch_musicbrainz_tracklist(chosen.release_id)
+                entries = extractor.fetch_musicbrainz_tracklist(
+                    chosen.release_id,
+                    expected_track_count=expected_count or None,
+                )
             except Exception as exc:  # noqa: BLE001
                 self.after(0, lambda: self._on_musicbrainz_error(exc))
                 return
@@ -1083,19 +1231,14 @@ class AtmosTrackSplitterApp(ctk.CTk):
                 messagebox.showerror("Could not read chapters", str(exc))
                 return
 
-        # MusicBrainz's track count is summed across every medium on the
-        # release, but fetch_musicbrainz_tracklist() only pulls the first
-        # medium's tracks (a single Atmos playlist is one continuous
-        # chapter set). A very different track count from this playlist's
-        # chapter count usually means the wrong release/edition was
-        # picked - flag it up front rather than letting a silent
-        # mismatch fall through to the review dialog.
+        # A very different track count from this playlist's chapter count
+        # usually means the wrong release/edition or medium was picked -
+        # flag it before the review dialog.
         if abs(len(entries) - len(chapters)) > max(2, len(chapters) // 4):
             proceed = messagebox.askyesno(
                 "Track count mismatch",
                 f"This playlist has {len(chapters)} chapter(s), but the "
-                f"selected MusicBrainz release has {len(entries)} track(s) "
-                f"on its first disc.\n\n"
+                f"selected MusicBrainz medium has {len(entries)} track(s).\n\n"
                 f"This usually means a different edition/release was "
                 f"picked. Continue anyway and review the proposed match?",
             )

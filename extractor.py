@@ -89,6 +89,19 @@ class Chapter:
     embedded_name: str = ""               # ChapterString read from the source, if any
     language: str = ""                    # ChapterLanguage of the embedded name, if any
 
+def is_generic_chapter_name(name: str, index: Optional[int] = None) -> bool:
+    """Return True for placeholder labels that identify a chapter, not a song."""
+    value = re.sub(r"\s+", " ", (name or "").strip()).strip(" ._-:")
+    if not value:
+        return True
+    if re.fullmatch(r"(?:chapter|chap|track|title|song)(?:\s*0*\d+)?", value, re.IGNORECASE):
+        return True
+    # Some authoring tools use only the chapter number as the display name.
+    if index is not None and re.fullmatch(rf"0*{index}", value):
+        return True
+    return False
+
+
 
 # ---------------------------------------------------------------------------
 # Tool paths - overridden by settings.py if the user configures custom paths
@@ -1241,8 +1254,47 @@ class MusicBrainzCandidate:
     artist: str
     date: str = ""
     track_count: int = 0
-    format_hint: str = ""   # e.g. "Blu-ray", "Digital Media" - the release's MusicBrainz format, if any
+    format_hint: str = ""   # Per-medium format/count summary, e.g. "CD (12) + Blu-ray (15)"
     score: int = 0          # MusicBrainz's own relevance score (0-100) for this search, not our playlist score
+
+
+def _simplify_album_search_title(album_title: str) -> str:
+    """Remove common rip-folder edition labels while preserving the album name."""
+    value = album_title.strip()
+    edition_terms = (
+        "blu[- ]?ray", "bluray", "atmos", "dolby", "truehd", "dts",
+        "sde", "super deluxe", "deluxe", "limited edition", "anniversary",
+        "remaster(?:ed)?", "reissue", "surround", "audio", "vinyl",
+        "\\bbr\\b", "\\buhd\\b", "\\b4k\\b", "\\bcd\\b",
+    )
+    marker = re.compile("|".join(f"(?:{term})" for term in edition_terms), re.IGNORECASE)
+    # Drop bracketed/parenthesised edition notes, but retain a bracket if it
+    # contains no edition wording (it may be part of the actual album title).
+    value = re.sub(
+        r"\s*[\[(][^\])]*[\])]",
+        lambda match: "" if marker.search(match.group(0)) else match.group(0),
+        value,
+    )
+    value = marker.sub(" ", value)
+    value = re.sub(r"\b(19|20)\d{2}\b", " ", value)
+    value = re.sub(r"\s+", " ", value)
+    return value.strip(" -_.[]()")
+
+
+def _tracklist_search_attempts(album_title: str, year: Optional[int]) -> list[tuple[str, Optional[int]]]:
+    """Return increasingly broad album/year searches, without duplicate attempts."""
+    simplified = _simplify_album_search_title(album_title)
+    attempts: list[tuple[str, Optional[int]]] = []
+    for title, search_year in (
+        (album_title.strip(), year),
+        (album_title.strip(), None),
+        (simplified, year),
+        (simplified, None),
+    ):
+        item = (title, search_year)
+        if title and item not in attempts:
+            attempts.append(item)
+    return attempts
 
 
 def search_musicbrainz_releases(
@@ -1252,51 +1304,215 @@ def search_musicbrainz_releases(
     limit: int = 8,
 ) -> list[MusicBrainzCandidate]:
     """
-    Search MusicBrainz for release candidates matching an artist/album
-    (and optionally year). Returns MusicBrainz's own ranked candidates -
-    this is a search, not a lookup, so more than one release can come
-    back (different editions, live vs studio versions, reissues). Nothing
-    is fetched or applied here; use fetch_musicbrainz_tracklist() on
-    whichever candidate the caller (user) picks.
+    Search MusicBrainz progressively: first use the supplied title and year,
+    then relax the year, remove common Blu-ray/edition labels, and finally
+    search the simplified title without a year. Stop at the first search
+    returning candidates so broad results do not swamp a precise match.
     """
     if not artist.strip() or not album_title.strip():
         raise ValueError("Both artist and album title are needed to search MusicBrainz.")
 
-    query_parts = [f'artist:"{artist.strip()}"', f'release:"{album_title.strip()}"']
-    if year:
-        query_parts.append(f"date:{year}")
-    query = " AND ".join(query_parts)
+    for title, search_year in _tracklist_search_attempts(album_title, year):
+        query_parts = [f'artist:"{artist.strip()}"', f'release:"{title}"']
+        if search_year:
+            query_parts.append(f"date:{search_year}")
+        query = " AND ".join(query_parts)
+        data = _musicbrainz_request("release", {"query": query, "limit": str(limit)})
 
-    data = _musicbrainz_request("release", {"query": query, "limit": str(limit)})
-
-    candidates: list[MusicBrainzCandidate] = []
-    for r in data.get("releases", []):
-        artist_credit = r.get("artist-credit") or []
-        artist_name = artist_credit[0].get("name", "") if artist_credit else ""
-        media = r.get("media") or []
-        track_count = sum(m.get("track-count", 0) for m in media)
-        format_hint = media[0].get("format") or "" if media else ""
-        candidates.append(
-            MusicBrainzCandidate(
-                release_id=r.get("id", ""),
-                title=r.get("title", ""),
-                artist=artist_name,
-                date=r.get("date", ""),
-                track_count=track_count,
-                format_hint=format_hint,
-                score=r.get("score", 0),
+        candidates: list[MusicBrainzCandidate] = []
+        for r in data.get("releases", []):
+            artist_credit = r.get("artist-credit") or []
+            artist_name = artist_credit[0].get("name", "") if artist_credit else ""
+            media = r.get("media") or []
+            track_count = sum(m.get("track-count", 0) for m in media)
+            format_hint = " + ".join(
+                f"{m.get('format') or 'Unknown format'} ({m.get('track-count', 0)})"
+                for m in media
             )
-        )
-    return candidates
+            candidates.append(
+                MusicBrainzCandidate(
+                    release_id=r.get("id", ""),
+                    title=r.get("title", ""),
+                    artist=artist_name,
+                    date=r.get("date", ""),
+                    track_count=track_count,
+                    format_hint=format_hint,
+                    score=r.get("score", 0),
+                )
+            )
+        if candidates:
+            return candidates
+    return []
+
+@dataclass
+class DiscogsCandidate:
+    release_id: str
+    title: str
+    artist: str
+    date: str = ""
+    format_hint: str = ""
+    track_count: int = 0
+    entries: list[TracklistEntry] = field(default_factory=list)
 
 
-def fetch_musicbrainz_tracklist(release_id: str) -> list[TracklistEntry]:
+DISCOGS_BASE_URL = "https://api.discogs.com"
+DISCOGS_USER_AGENT = "AtmosTrackSplitter/0.1 (+https://github.com/quinnuk/AtmosTrackSplitter)"
+
+
+def _discogs_request(path: str, params: dict[str, str], token: str) -> dict:
+    """Request public Discogs database data using the user's personal token."""
+    if not token.strip():
+        raise ValueError("A Discogs personal access token is required for database search.")
+    query = urllib.parse.urlencode(params)
+    url = f"{DISCOGS_BASE_URL}/{path}?{query}" if query else f"{DISCOGS_BASE_URL}/{path}"
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": DISCOGS_USER_AGENT,
+            "Authorization": f"Discogs token={token.strip()}",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            raw = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401:
+            raise RuntimeError("Discogs rejected the token. Check that your personal access token is correct.") from exc
+        if exc.code == 429:
+            raise RuntimeError("Discogs rate limit reached. Please wait a little and try again.") from exc
+        raise RuntimeError(f"Discogs returned an error ({exc.code}): {exc.reason}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Could not reach Discogs: {exc.reason}") from exc
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Discogs returned unexpected data: {exc}") from exc
+
+
+def _discogs_duration_seconds(value: str) -> Optional[float]:
+    """Parse Discogs track durations such as 4:32 or 1:03:10."""
+    if not value or not value.strip():
+        return None
+    try:
+        parts = [int(part) for part in value.strip().split(":")]
+        if len(parts) == 2:
+            return float(parts[0] * 60 + parts[1])
+        if len(parts) == 3:
+            return float(parts[0] * 3600 + parts[1] * 60 + parts[2])
+    except ValueError:
+        return None
+    return None
+
+
+def search_discogs_releases(
+    artist: str,
+    album_title: str,
+    year: Optional[int],
+    token: str,
+    expected_track_count: Optional[int] = None,
+    limit: int = 8,
+) -> list[DiscogsCandidate]:
     """
-    Fetch the full tracklist (with per-track lengths, where MusicBrainz
-    has them) for a specific release, as TracklistEntry objects ready for
-    match_tracklist_to_chapters(). Only the first medium (disc) is used -
-    MusicBrainz supports multi-disc releases, but one Atmos Blu-ray
-    playlist corresponds to a single continuous chapter set.
+    Search Discogs progressively, relaxing the year and stripping common
+    Blu-ray/edition labels only when a more precise search returns nothing.
+    The first successful query supplies candidates; these are ranked by
+    chapter-count proximity, then Blu-ray format.
+    """
+    if not artist.strip() or not album_title.strip():
+        raise ValueError("Both artist and album title are needed to search Discogs.")
+
+    for title_query, search_year in _tracklist_search_attempts(album_title, year):
+        params = {
+            "type": "release",
+            "artist": artist.strip(),
+            "release_title": title_query,
+            "per_page": str(min(max(limit, 1), 10)),
+        }
+        if search_year:
+            params["year"] = str(search_year)
+
+        data = _discogs_request("database/search", params, token)
+        results = data.get("results", [])
+        if not results:
+            continue
+
+        candidates: list[DiscogsCandidate] = []
+        for result in results:
+            release_id = str(result.get("id") or "")
+            if not release_id:
+                continue
+            detail = _discogs_request(f"releases/{release_id}", {}, token)
+            track_items = [
+                item for item in (detail.get("tracklist") or [])
+                if item.get("type_") in (None, "", "track") and (item.get("title") or "").strip()
+            ]
+            entries: list[TracklistEntry] = []
+            cumulative_start = 0.0
+            timing_reliable = True
+            for item in track_items:
+                duration = _discogs_duration_seconds(item.get("duration", ""))
+                entries.append(
+                    TracklistEntry(
+                        index=len(entries) + 1,
+                        name=item.get("title", "").strip(),
+                        start_seconds=cumulative_start if timing_reliable else None,
+                        duration_seconds=duration,
+                    )
+                )
+                if duration is not None and timing_reliable:
+                    cumulative_start += duration
+                else:
+                    timing_reliable = False
+
+            formats = detail.get("formats") or []
+            format_hint = " + ".join(
+                " / ".join([fmt.get("name", "")] + (fmt.get("descriptions") or []))
+                for fmt in formats if fmt.get("name")
+            )
+            artists = detail.get("artists") or []
+            artist_name = ", ".join(a.get("name", "") for a in artists if a.get("name"))
+            title = detail.get("title") or result.get("title") or ""
+            date = str(detail.get("year") or result.get("year") or "")
+            candidates.append(
+                DiscogsCandidate(
+                    release_id=release_id,
+                    title=title,
+                    artist=artist_name or artist.strip(),
+                    date=date,
+                    format_hint=format_hint,
+                    track_count=len(entries),
+                    entries=entries,
+                )
+            )
+
+        if candidates:
+            def rank(candidate: DiscogsCandidate) -> tuple[int, int]:
+                distance = (
+                    abs(candidate.track_count - expected_track_count)
+                    if expected_track_count is not None else 0
+                )
+                fmt = candidate.format_hint.lower()
+                blu_ray = 0 if "blu-ray" in fmt or "bluray" in fmt else 1
+                return (distance, blu_ray)
+
+            return sorted(candidates, key=rank)
+    return []
+
+def fetch_musicbrainz_tracklist(
+    release_id: str,
+    expected_track_count: Optional[int] = None,
+) -> list[TracklistEntry]:
+    """
+    Fetch the tracklist from the most plausible medium of a MusicBrainz
+    release. Multi-disc releases often list a CD before the Blu-ray; using
+    media[0] blindly can return the wrong tracklist even when the correct
+    release was found.
+
+    When the Atmos playlist chapter count is known, prefer a medium whose
+    track count matches it. If counts tie (or no count was supplied), prefer
+    a Blu-ray medium, then retain MusicBrainz's original order as a
+    deterministic fallback. The user still reviews the proposed names
+    before anything is applied.
 
     start_seconds is only filled in for a run of tracks whose lengths are
     all known from the start - a length-less track partway through the
@@ -1310,11 +1526,22 @@ def fetch_musicbrainz_tracklist(release_id: str) -> list[TracklistEntry]:
     if not media:
         return []
 
+    def medium_rank(item: tuple[int, dict]) -> tuple[int, int, int]:
+        index, medium = item
+        tracks = medium.get("tracks") or []
+        count = medium.get("track-count", len(tracks))
+        fmt = (medium.get("format") or "").lower()
+        count_distance = abs(count - expected_track_count) if expected_track_count is not None else 0
+        blu_ray_preference = 0 if "blu-ray" in fmt or "bluray" in fmt else 1
+        return (count_distance, blu_ray_preference, index)
+
+    selected_medium = min(enumerate(media), key=medium_rank)[1]
+
     entries: list[TracklistEntry] = []
     cumulative_start = 0.0
     timing_still_reliable = True
 
-    for track in media[0].get("tracks", []):
+    for track in selected_medium.get("tracks", []):
         title = (track.get("title") or "").strip()
         if not title:
             continue
