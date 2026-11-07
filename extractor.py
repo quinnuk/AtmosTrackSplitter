@@ -1263,8 +1263,8 @@ def _simplify_album_search_title(album_title: str) -> str:
         value,
     )
     value = marker.sub(" ", value)
-    value = re.sub(r"\\b(19|20)\\d{2}\\b", " ", value)
-    value = re.sub(r"\\s+", " ", value)
+    value = re.sub(r"\b(19|20)\d{2}\b", " ", value)
+    value = re.sub(r"\s+", " ", value)
     return value.strip(" -_.[]()")
 
 
