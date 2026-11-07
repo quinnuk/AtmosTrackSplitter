@@ -843,14 +843,26 @@ class AtmosTrackSplitterApp(ctk.CTk):
         if self.selected_playlist is not pl:
             return  # user already moved on to a different playlist selection
         self.selected_playlist_chapters = chapters
-        for ch in chapters:
-            if ch.index not in self.chapter_name_vars or not ch.embedded_name:
+        embedded_names = [ch for ch in chapters if ch.embedded_name.strip()]
+        meaningful_names = [
+            ch for ch in embedded_names
+            if not extractor.is_generic_chapter_name(ch.embedded_name, ch.index)
+        ]
+
+        for ch in meaningful_names:
+            if ch.index not in self.chapter_name_vars:
                 continue
             var = self.chapter_name_vars[ch.index]
             if var.get().strip():
                 continue  # already has a name (preserved or hand-typed) - don't clobber it
             var.set(ch.embedded_name)
             self._mark_chapter_source(ch.index, ch.embedded_name)
+
+        if embedded_names and not meaningful_names:
+            self.set_status(
+                "The disc has chapter markers, but only generic labels (e.g. Chapter 01); "
+                "no song titles were embedded."
+            )
 
     def _mark_chapter_source(self, index: int, baseline_value: str) -> None:
         """Label a chapter's name as auto-filled, and flip the label to 'edited' if the user changes it."""
