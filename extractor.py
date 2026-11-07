@@ -1294,6 +1294,150 @@ def search_musicbrainz_releases(
     return candidates
 
 
+@dataclass
+class DiscogsCandidate:
+    release_id: str
+    title: str
+    artist: str
+    date: str = ""
+    format_hint: str = ""
+    track_count: int = 0
+    entries: list[TracklistEntry] = field(default_factory=list)
+
+
+DISCOGS_BASE_URL = "https://api.discogs.com"
+DISCOGS_USER_AGENT = "AtmosTrackSplitter/0.1 (+https://github.com/quinnuk/AtmosTrackSplitter)"
+
+
+def _discogs_request(path: str, params: dict[str, str], token: str) -> dict:
+    """Request public Discogs database data using the user's personal token."""
+    if not token.strip():
+        raise ValueError("A Discogs personal access token is required for database search.")
+    query = urllib.parse.urlencode(params)
+    url = f"{DISCOGS_BASE_URL}/{path}?{query}" if query else f"{DISCOGS_BASE_URL}/{path}"
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": DISCOGS_USER_AGENT,
+            "Authorization": f"Discogs token={token.strip()}",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            raw = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401:
+            raise RuntimeError("Discogs rejected the token. Check that your personal access token is correct.") from exc
+        if exc.code == 429:
+            raise RuntimeError("Discogs rate limit reached. Please wait a little and try again.") from exc
+        raise RuntimeError(f"Discogs returned an error ({exc.code}): {exc.reason}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Could not reach Discogs: {exc.reason}") from exc
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Discogs returned unexpected data: {exc}") from exc
+
+
+def _discogs_duration_seconds(value: str) -> Optional[float]:
+    """Parse Discogs track durations such as 4:32 or 1:03:10."""
+    if not value or not value.strip():
+        return None
+    try:
+        parts = [int(part) for part in value.strip().split(":")]
+        if len(parts) == 2:
+            return float(parts[0] * 60 + parts[1])
+        if len(parts) == 3:
+            return float(parts[0] * 3600 + parts[1] * 60 + parts[2])
+    except ValueError:
+        return None
+    return None
+
+
+def search_discogs_releases(
+    artist: str,
+    album_title: str,
+    year: Optional[int],
+    token: str,
+    expected_track_count: Optional[int] = None,
+    limit: int = 8,
+) -> list[DiscogsCandidate]:
+    """
+    Search Discogs and inspect the returned release editions. The detail
+    lookup supplies the actual tracklist and format; candidates are ranked
+    by chapter-count proximity, then Blu-ray format, then search order.
+    """
+    if not artist.strip() or not album_title.strip():
+        raise ValueError("Both artist and album title are needed to search Discogs.")
+
+    params = {
+        "type": "release",
+        "artist": artist.strip(),
+        "release_title": album_title.strip(),
+        "per_page": str(min(max(limit, 1), 10)),
+    }
+    if year:
+        params["year"] = str(year)
+
+    data = _discogs_request("database/search", params, token)
+    candidates: list[DiscogsCandidate] = []
+    for result in data.get("results", []):
+        release_id = str(result.get("id") or "")
+        if not release_id:
+            continue
+        detail = _discogs_request(f"releases/{release_id}", {}, token)
+        track_items = [
+            item for item in (detail.get("tracklist") or [])
+            if item.get("type_") in (None, "", "track") and (item.get("title") or "").strip()
+        ]
+        entries: list[TracklistEntry] = []
+        cumulative_start = 0.0
+        timing_reliable = True
+        for item in track_items:
+            duration = _discogs_duration_seconds(item.get("duration", ""))
+            entries.append(
+                TracklistEntry(
+                    index=len(entries) + 1,
+                    name=item.get("title", "").strip(),
+                    start_seconds=cumulative_start if timing_reliable else None,
+                    duration_seconds=duration,
+                )
+            )
+            if duration is not None and timing_reliable:
+                cumulative_start += duration
+            else:
+                timing_reliable = False
+
+        formats = detail.get("formats") or []
+        format_hint = " + ".join(
+            " / ".join([fmt.get("name", "")] + (fmt.get("descriptions") or []))
+            for fmt in formats if fmt.get("name")
+        )
+        artists = detail.get("artists") or []
+        artist_name = ", ".join(a.get("name", "") for a in artists if a.get("name"))
+        title = detail.get("title") or result.get("title") or ""
+        date = str(detail.get("year") or result.get("year") or "")
+        candidates.append(
+            DiscogsCandidate(
+                release_id=release_id,
+                title=title,
+                artist=artist_name or artist.strip(),
+                date=date,
+                format_hint=format_hint,
+                track_count=len(entries),
+                entries=entries,
+            )
+        )
+
+    def rank(candidate: DiscogsCandidate) -> tuple[int, int]:
+        distance = abs(candidate.track_count - expected_track_count) if expected_track_count is not None else 0
+        fmt = candidate.format_hint.lower()
+        blu_ray = 0 if "blu-ray" in fmt or "bluray" in fmt else 1
+        return (distance, blu_ray)
+
+    return sorted(candidates, key=rank)
+
+
 def fetch_musicbrainz_tracklist(
     release_id: str,
     expected_track_count: Optional[int] = None,
