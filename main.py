@@ -536,8 +536,11 @@ class AtmosTrackSplitterApp(ctk.CTk):
             paste_row, text="Import Tracklist...", width=150, command=self.import_tracklist
         ).grid(row=0, column=1, padx=(8, 0))
         ctk.CTkButton(
-            paste_row, text="Search Online...", width=140, command=self.search_online_tracklist
+            paste_row, text="MusicBrainz...", width=125, command=self.search_online_tracklist
         ).grid(row=0, column=2, padx=(8, 0))
+        ctk.CTkButton(
+            paste_row, text="Discogs...", width=105, command=self.search_discogs_tracklist
+        ).grid(row=0, column=3, padx=(8, 0))
 
         # --- Chapter/track name table (scrollable) ---
         self.chapter_scroll = ctk.CTkScrollableFrame(self, label_text="Chapters / Track Names")
@@ -1038,6 +1041,133 @@ class AtmosTrackSplitterApp(ctk.CTk):
             self.after(0, lambda: self._on_musicbrainz_search_complete(candidates))
 
         threading.Thread(target=work, daemon=True).start()
+
+    def search_discogs_tracklist(self) -> None:
+        if not self.selected_playlist:
+            messagebox.showwarning("No playlist selected", "Select a playlist first.")
+            return
+        artist_guess, album_guess, year_guess = "", "", None
+        if self.disc_folder is not None:
+            artist_guess, album_guess, year_guess = extractor.guess_artist_album_year(self.disc_folder)
+        search_input = self._show_discogs_search_dialog(artist_guess, album_guess, year_guess)
+        if search_input is None:
+            return
+        artist, album, year, token = search_input
+        self.set_status(f"Searching Discogs for {artist} - {album}...")
+        expected_count = len(self.selected_playlist_chapters)
+
+        def work() -> None:
+            try:
+                candidates = extractor.search_discogs_releases(
+                    artist, album, year, token, expected_track_count=expected_count or None
+                )
+            except Exception as exc:  # noqa: BLE001
+                self.after(0, lambda exc=exc: self._on_musicbrainz_error(exc))
+                return
+            self.after(0, lambda: self._on_discogs_search_complete(candidates))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _show_discogs_search_dialog(
+        self, artist_guess: str, album_guess: str, year_guess: int | None
+    ) -> tuple[str, str, int | None, str] | None:
+        outcome: dict[str, tuple[str, str, int | None, str] | None] = {"result": None}
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Search Discogs")
+        dialog.geometry("480x310")
+        dialog.transient(self)
+        dialog.grab_set()
+
+        ctk.CTkLabel(dialog, text="Artist:").grid(row=0, column=0, sticky="w", padx=16, pady=(16, 4))
+        artist_var = ctk.StringVar(value=artist_guess)
+        ctk.CTkEntry(dialog, textvariable=artist_var, width=300).grid(row=0, column=1, padx=16, pady=(16, 4))
+        ctk.CTkLabel(dialog, text="Album:").grid(row=1, column=0, sticky="w", padx=16, pady=4)
+        album_var = ctk.StringVar(value=album_guess)
+        ctk.CTkEntry(dialog, textvariable=album_var, width=300).grid(row=1, column=1, padx=16, pady=4)
+        ctk.CTkLabel(dialog, text="Year (optional):").grid(row=2, column=0, sticky="w", padx=16, pady=4)
+        year_var = ctk.StringVar(value=str(year_guess) if year_guess else "")
+        ctk.CTkEntry(dialog, textvariable=year_var, width=100).grid(row=2, column=1, sticky="w", padx=16, pady=4)
+        ctk.CTkLabel(dialog, text="Discogs personal access token:").grid(row=3, column=0, sticky="w", padx=16, pady=4)
+        token_var = ctk.StringVar(value=self.cfg.get("discogs_token", ""))
+        ctk.CTkEntry(dialog, textvariable=token_var, width=300, show="•").grid(row=3, column=1, padx=16, pady=4)
+        ctk.CTkLabel(
+            dialog,
+            text="The token is saved locally in your Windows user settings (not in the GitHub repository).",
+            text_color="gray60", wraplength=430, justify="left",
+        ).grid(row=4, column=0, columnspan=2, sticky="w", padx=16, pady=(4, 0))
+        ctk.CTkButton(
+            dialog, text="Get a Discogs token",
+            command=lambda: webbrowser.open("https://www.discogs.com/settings/developers"),
+        ).grid(row=5, column=0, columnspan=2, pady=8)
+
+        def search() -> None:
+            artist, album, token = artist_var.get().strip(), album_var.get().strip(), token_var.get().strip()
+            if not artist or not album or not token:
+                messagebox.showwarning("Missing information", "Artist, album and Discogs token are required.", parent=dialog)
+                return
+            year_text = year_var.get().strip()
+            year = int(year_text) if year_text.isdigit() else None
+            settings.update(discogs_token=token)
+            self.cfg["discogs_token"] = token
+            outcome["result"] = (artist, album, year, token)
+            dialog.destroy()
+
+        buttons = ctk.CTkFrame(dialog, fg_color="transparent")
+        buttons.grid(row=6, column=0, columnspan=2, pady=12)
+        ctk.CTkButton(buttons, text="Cancel", command=dialog.destroy, width=100).pack(side="left", padx=6)
+        ctk.CTkButton(buttons, text="Search", command=search, width=100).pack(side="left", padx=6)
+        dialog.wait_window()
+        return outcome["result"]
+
+    def _on_discogs_search_complete(self, candidates: list[extractor.DiscogsCandidate]) -> None:
+        if not candidates:
+            self.set_status("No Discogs results found.")
+            messagebox.showinfo("No results", "No matching releases found on Discogs.")
+            return
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Discogs results - best chapter-count matches first")
+        dialog.geometry("620x440")
+        dialog.transient(self)
+        dialog.grab_set()
+        ctk.CTkLabel(
+            dialog, text=f"{len(candidates)} release(s) found - best chapter-count matches first:",
+            font=ctk.CTkFont(weight="bold"),
+        ).pack(padx=16, pady=(16, 8), anchor="w")
+        scroll = ctk.CTkScrollableFrame(dialog)
+        scroll.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+        selected = tk.IntVar(value=0)
+        for i, candidate in enumerate(candidates):
+            label = f"{candidate.artist} - {candidate.title}"
+            if candidate.date:
+                label += f" ({candidate.date})"
+            label += f", {candidate.track_count} tracks"
+            if candidate.format_hint:
+                label += f" [{candidate.format_hint}]"
+            ctk.CTkRadioButton(scroll, text=label, variable=selected, value=i).pack(anchor="w", pady=4, padx=4)
+        outcome: dict[str, int | None] = {"index": None}
+        buttons = ctk.CTkFrame(dialog, fg_color="transparent")
+        buttons.pack(pady=(0, 16))
+        ctk.CTkButton(buttons, text="Cancel", command=dialog.destroy, width=100).pack(side="left", padx=6)
+        def use_selected() -> None:
+            outcome["index"] = selected.get()
+            dialog.destroy()
+        ctk.CTkButton(buttons, text="Use Selected", command=use_selected, width=130).pack(side="left", padx=6)
+        dialog.wait_window()
+        if outcome["index"] is None:
+            return
+        chosen = candidates[outcome["index"]]
+        chapters = self.selected_playlist_chapters
+        result = extractor.match_tracklist_to_chapters(chapters, chosen.entries)
+        accepted = self._show_tracklist_review_dialog(f"Discogs: {chosen.title}", result)
+        if not accepted:
+            return
+        for index, name in accepted.items():
+            if index in self.chapter_name_vars:
+                self.chapter_name_vars[index].set(name)
+                label = self.chapter_source_labels.get(index)
+                if label is not None:
+                    label.configure(text="Discogs")
+        self.set_status(f"Imported {len(accepted)} track name(s) from Discogs.")
 
     def _on_musicbrainz_error(self, exc: Exception) -> None:
         self.set_status("MusicBrainz lookup failed.")
