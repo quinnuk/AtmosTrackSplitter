@@ -24,6 +24,7 @@ DEFAULTS: dict[str, Any] = {
     "output_container": "mkv",   # or "m4a" / "flac" if a re-encode step is ever added
     "watch_folder_enabled": False,
     "watch_folder_path": "",
+    "discogs_token": "",
 }
 
 
