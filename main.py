@@ -1092,7 +1092,7 @@ class AtmosTrackSplitterApp(ctk.CTk):
         ctk.CTkEntry(dialog, textvariable=token_var, width=300, show="•").grid(row=3, column=1, padx=16, pady=4)
         ctk.CTkLabel(
             dialog,
-            text="The token is saved locally in your Windows user settings (not in the GitHub repository).",
+            text="The token is saved locally in your Windows user settings (not in GitHub). It is stored as plain text, so keep your Windows account secure.",
             text_color="gray60", wraplength=430, justify="left",
         ).grid(row=4, column=0, columnspan=2, sticky="w", padx=16, pady=(4, 0))
         ctk.CTkButton(
@@ -1217,19 +1217,14 @@ class AtmosTrackSplitterApp(ctk.CTk):
                 messagebox.showerror("Could not read chapters", str(exc))
                 return
 
-        # MusicBrainz's track count is summed across every medium on the
-        # release, but fetch_musicbrainz_tracklist() only pulls the first
-        # medium's tracks (a single Atmos playlist is one continuous
-        # chapter set). A very different track count from this playlist's
-        # chapter count usually means the wrong release/edition was
-        # picked - flag it up front rather than letting a silent
-        # mismatch fall through to the review dialog.
+        # A very different track count from this playlist's chapter count
+        # usually means the wrong release/edition or medium was picked -
+        # flag it before the review dialog.
         if abs(len(entries) - len(chapters)) > max(2, len(chapters) // 4):
             proceed = messagebox.askyesno(
                 "Track count mismatch",
                 f"This playlist has {len(chapters)} chapter(s), but the "
-                f"selected MusicBrainz release has {len(entries)} track(s) "
-                f"on its first disc.\n\n"
+                f"selected MusicBrainz medium has {len(entries)} track(s).\n\n"
                 f"This usually means a different edition/release was "
                 f"picked. Continue anyway and review the proposed match?",
             )
