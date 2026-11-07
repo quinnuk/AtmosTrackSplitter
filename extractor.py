@@ -91,10 +91,10 @@ class Chapter:
 
 def is_generic_chapter_name(name: str, index: Optional[int] = None) -> bool:
     """Return True for placeholder labels that identify a chapter, not a song."""
-    value = re.sub(r"\\s+", " ", (name or "").strip()).strip(" ._-:")
+    value = re.sub(r"\s+", " ", (name or "").strip()).strip(" ._-:")
     if not value:
         return True
-    if re.fullmatch(r"(?:chapter|chap|track|title|song)(?:\\s*0*\\d+)?", value, re.IGNORECASE):
+    if re.fullmatch(r"(?:chapter|chap|track|title|song)(?:\s*0*\d+)?", value, re.IGNORECASE):
         return True
     # Some authoring tools use only the chapter number as the display name.
     if index is not None and re.fullmatch(rf"0*{index}", value):
