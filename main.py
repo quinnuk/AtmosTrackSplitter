@@ -1054,10 +1054,10 @@ class AtmosTrackSplitterApp(ctk.CTk):
             return
 
         self.set_status(f"Fetching tracklist for {chosen.title}...")
+        expected_count = len(self.selected_playlist_chapters)
 
         def work() -> None:
             try:
-                expected_count = len(self.selected_playlist_chapters)
                 entries = extractor.fetch_musicbrainz_tracklist(
                     chosen.release_id,
                     expected_track_count=expected_count or None,
