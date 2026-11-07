@@ -1057,7 +1057,11 @@ class AtmosTrackSplitterApp(ctk.CTk):
 
         def work() -> None:
             try:
-                entries = extractor.fetch_musicbrainz_tracklist(chosen.release_id)
+                expected_count = len(self.selected_playlist_chapters)
+                entries = extractor.fetch_musicbrainz_tracklist(
+                    chosen.release_id,
+                    expected_track_count=expected_count or None,
+                )
             except Exception as exc:  # noqa: BLE001
                 self.after(0, lambda: self._on_musicbrainz_error(exc))
                 return
