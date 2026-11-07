@@ -164,13 +164,15 @@ NAMING CHAPTERS - FOUR WAYS
   files sitting in the disc folder (BDInfo.txt, Track Listing.txt,
   bdmt_*.xml etc), it'll mention them - these usually came bundled
   with the rip and are normally exactly the right tracklist.
-- Search Online...: looks up the album on MusicBrainz. Good for
-  well-known standard releases. LIMITED/BOUTIQUE EDITIONS (small-run
-  audiophile Blu-ray Pure Audio / Surround Series discs, mail-order
-  exclusives, etc) are very often missing from MusicBrainz, or only
-  the parent CD/digital release is indexed - if the track count shown
-  looks nothing like your chapter count, that's the usual reason.
-  Import Tracklist is more reliable for that kind of disc.
+- MusicBrainz...: searches MusicBrainz and chooses the most plausible
+  release medium by comparing its track count with your Atmos chapters,
+  preferring Blu-ray when counts tie.
+- Discogs...: optional second catalogue for editions missing from
+  MusicBrainz. It needs a free Discogs personal access token. Results are
+  ranked by chapter-count match and Blu-ray format, then reviewed before
+  names are applied. Boutique Blu-ray editions may still be absent from
+  both catalogues; bundled sidecar tracklists or a text file remain the
+  dependable fallback.
 
 Whichever method you use, nothing is applied until you review and
 accept the proposed matches - matched chapters are pre-checked,
