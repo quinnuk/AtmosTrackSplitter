@@ -59,7 +59,7 @@ Atmos Track Splitter automates the whole thing: point it at the ripped disc fold
 ## Features
 
 - 🔍 **Auto-detects the right playlist** — scans every `.mpls` playlist and scores each one (Atmos track present, chapter count, video track, duration) rather than just grabbing the first Atmos match, and explains its reasoning so you can sanity-check the pick. The playlist dropdown itself only appears when there are genuinely two or more plausible candidates to choose between; for the common case of one clear Atmos playlist it's picked automatically and the reasoning is shown inline instead. Near-identical playlists (alternate angles, region variants) are automatically flagged as likely duplicates instead of shown as separate top candidates.
-- 📝 **Four ways to name tracks** — paste a plain list and it fills the chapter table automatically as you type or paste; import a tracklist file (`.txt`, `.nfo`, `.cue`, or a saved `.tracklist.json`); pull in whatever chapter names are already embedded in the disc; or look the album up on **MusicBrainz** and match its tracklist to your chapters automatically. Every method shows a review screen before anything is applied — matched chapters pre-checked, mismatches flagged, nothing silently overwritten.
+- 📝 **Five ways to name tracks** — paste a plain list and it fills the chapter table automatically as you type or paste; import a tracklist file (`.txt`, `.nfo`, `.cue`, or a saved `.tracklist.json`); pull in whatever chapter names are already embedded in the disc; or search **MusicBrainz** and **Discogs** and match a release tracklist to your chapters automatically. Every method shows a review screen before anything is applied — matched chapters pre-checked, mismatches flagged, nothing silently overwritten.
 - 📂 **Finds sidecar tracklists for you** — if a `.txt`/`.nfo`/`.cue` tracklist is already sitting in the disc rip folder, the app tells you so you don't have to go looking.
 - ⏸️ **Resumable, cancel-safe jobs** — extraction progress is checkpointed to a manifest, so a crash, a cancel, or a closed app mid-job doesn't mean starting over; relaunching against the same output folder offers to resume exactly where it left off.
 - 📋 **Per-job extraction log** — every run writes an `extraction.log` you can open with one click, showing exactly what each external tool was told to do — the single most useful thing to attach to a bug report.
@@ -76,7 +76,7 @@ Atmos Track Splitter automates the whole thing: point it at the ripped disc fold
 
 1. Point the app at a folder containing a ripped disc — it must have the standard, unmodified `BDMV/PLAYLIST/*.mpls` structure (not a flattened single MKV).
 2. It inspects every playlist via `mkvmerge -i` and scores each as a candidate for the Atmos feature, pre-selecting the best match and showing its reasoning.
-3. You name each chapter — paste, import a file, pull in embedded names, or look it up on MusicBrainz — and review the proposed matches before accepting them.
+3. You name each chapter — paste, import a file, pull in embedded names, or look it up on MusicBrainz or Discogs — and review the proposed matches before accepting them.
 4. It extracts the video track plus just the Atmos audio (stream-copy, no transcoding) via `mkvmerge`, dropping the other audio tracks (AC-3, DTS-HD, etc). It then reads the exact chapter timestamps and splits the result into one file per song with `ffmpeg`, checkpointing progress as it goes.
 
 ## Requirements
