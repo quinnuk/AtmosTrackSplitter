@@ -1241,7 +1241,7 @@ class MusicBrainzCandidate:
     artist: str
     date: str = ""
     track_count: int = 0
-    format_hint: str = ""   # e.g. "Blu-ray", "Digital Media" - the release's MusicBrainz format, if any
+    format_hint: str = ""   # Per-medium format/count summary, e.g. "CD (12) + Blu-ray (15)"
     score: int = 0          # MusicBrainz's own relevance score (0-100) for this search, not our playlist score
 
 
@@ -1275,7 +1275,11 @@ def search_musicbrainz_releases(
         artist_name = artist_credit[0].get("name", "") if artist_credit else ""
         media = r.get("media") or []
         track_count = sum(m.get("track-count", 0) for m in media)
-        format_hint = media[0].get("format") or "" if media else ""
+        # Show every medium: multi-disc releases often list a CD before the Blu-ray.
+        format_hint = " + ".join(
+            f"{m.get('format') or 'Unknown format'} ({m.get('track-count', 0)})"
+            for m in media
+        )
         candidates.append(
             MusicBrainzCandidate(
                 release_id=r.get("id", ""),
@@ -1290,13 +1294,21 @@ def search_musicbrainz_releases(
     return candidates
 
 
-def fetch_musicbrainz_tracklist(release_id: str) -> list[TracklistEntry]:
+def fetch_musicbrainz_tracklist(
+    release_id: str,
+    expected_track_count: Optional[int] = None,
+) -> list[TracklistEntry]:
     """
-    Fetch the full tracklist (with per-track lengths, where MusicBrainz
-    has them) for a specific release, as TracklistEntry objects ready for
-    match_tracklist_to_chapters(). Only the first medium (disc) is used -
-    MusicBrainz supports multi-disc releases, but one Atmos Blu-ray
-    playlist corresponds to a single continuous chapter set.
+    Fetch the tracklist from the most plausible medium of a MusicBrainz
+    release. Multi-disc releases often list a CD before the Blu-ray; using
+    media[0] blindly can return the wrong tracklist even when the correct
+    release was found.
+
+    When the Atmos playlist chapter count is known, prefer a medium whose
+    track count matches it. If counts tie (or no count was supplied), prefer
+    a Blu-ray medium, then retain MusicBrainz's original order as a
+    deterministic fallback. The user still reviews the proposed names
+    before anything is applied.
 
     start_seconds is only filled in for a run of tracks whose lengths are
     all known from the start - a length-less track partway through the
@@ -1310,11 +1322,22 @@ def fetch_musicbrainz_tracklist(release_id: str) -> list[TracklistEntry]:
     if not media:
         return []
 
+    def medium_rank(item: tuple[int, dict]) -> tuple[int, int, int]:
+        index, medium = item
+        tracks = medium.get("tracks") or []
+        count = medium.get("track-count", len(tracks))
+        fmt = (medium.get("format") or "").lower()
+        count_distance = abs(count - expected_track_count) if expected_track_count is not None else 0
+        blu_ray_preference = 0 if "blu-ray" in fmt or "bluray" in fmt else 1
+        return (count_distance, blu_ray_preference, index)
+
+    selected_medium = min(enumerate(media), key=medium_rank)[1]
+
     entries: list[TracklistEntry] = []
     cumulative_start = 0.0
     timing_still_reliable = True
 
-    for track in media[0].get("tracks", []):
+    for track in selected_medium.get("tracks", []):
         title = (track.get("title") or "").strip()
         if not title:
             continue
