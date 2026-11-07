@@ -1258,7 +1258,7 @@ def _simplify_album_search_title(album_title: str) -> str:
     # Drop bracketed/parenthesised edition notes, but retain a bracket if it
     # contains no edition wording (it may be part of the actual album title).
     value = re.sub(
-        r"\\s*[\\[(][^\\])]*[\\])]",
+        r"\s*[\[(][^\])]*[\])]",
         lambda match: "" if marker.search(match.group(0)) else match.group(0),
         value,
     )
