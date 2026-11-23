@@ -18,12 +18,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       xdg-utils \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR \${APP_DIR}
-COPY . \${APP_DIR}
+WORKDIR ${APP_DIR}
+COPY . ${APP_DIR}
 
-RUN python3 -m venv \${VENV_DIR} \
-    && \${VENV_DIR}/bin/pip install --no-cache-dir --upgrade pip \
-    && \${VENV_DIR}/bin/pip install --no-cache-dir -r requirements.txt \
+RUN python3 -m venv ${VENV_DIR} \
+    && ${VENV_DIR}/bin/pip install --no-cache-dir --upgrade pip \
+    && ${VENV_DIR}/bin/pip install --no-cache-dir -r requirements.txt \
     && printf '%s\n' \
       '[Desktop Entry]' \
       'Type=Application' \
