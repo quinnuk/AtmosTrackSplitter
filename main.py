@@ -27,7 +27,10 @@ from typing import Callable
 import customtkinter as ctk
 
 import extractor
+import poster_art
 import settings
+import qbittorrent
+import iso_support
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -240,8 +243,19 @@ class AtmosTrackSplitterApp(ctk.CTk):
         self._source_debounce_id: str | None = None
         self._paste_debounce_id: str | None = None
         self._last_scanned_folder: Path | None = None
+        self.album_artist = ""
+        self.album_title = ""
+        self.album_year = ""
+        self.musicbrainz_release_id = ""
+        self._auto_names_started_for = ""
+        self.active_output_folder: Path | None = None
+        self.active_source_folder: Path | None = None
         self.output_var = ctk.StringVar(value=self.cfg.get("last_output_folder", ""))
         self._output_editing = not bool(self.cfg.get("last_output_folder"))
+        self.active_staging_path: Path | None = None
+        self.active_staged_disc_folder: Path | None = None
+        self.album_name_hint = ""
+        self.download_root_folder: Path | None = None
 
         self._apply_tool_paths()
         self._build_layout()
@@ -488,6 +502,11 @@ class AtmosTrackSplitterApp(ctk.CTk):
         ctk.CTkButton(source_frame, text="Browse...", width=100, command=self.browse_source).grid(
             row=0, column=1, padx=(0, 8), pady=8
         )
+        self.completed_downloads_button = ctk.CTkButton(
+            source_frame, text="Completed downloads...", width=175,
+            command=self.refresh_completed_downloads,
+        )
+        self.completed_downloads_button.grid(row=0, column=2, padx=(0, 8), pady=8)
 
         # --- Playlist selection row ---
         playlist_frame = ctk.CTkFrame(self)
@@ -619,15 +638,175 @@ class AtmosTrackSplitterApp(ctk.CTk):
     # Source folder / scanning
     # ------------------------------------------------------------------
 
+    def refresh_completed_downloads(self) -> None:
+        """List finished audio-bluray torrents without changing qBittorrent state."""
+        self.completed_downloads_button.configure(state="disabled", text="Checking...")
+        self.set_status("Checking qBittorrent for completed audio Blu-ray downloads...")
+
+        def work() -> None:
+            try:
+                downloads = qbittorrent.list_completed_disc_downloads()
+            except Exception as exc:  # noqa: BLE001
+                self.after(0, lambda err=exc: self._on_completed_downloads_loaded([], err))
+                return
+            self.after(0, lambda items=downloads: self._on_completed_downloads_loaded(items))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_completed_downloads_loaded(
+        self, downloads: list[qbittorrent.CompletedDownload], error: Exception | None = None
+    ) -> None:
+        self.completed_downloads_button.configure(state="normal", text="Completed downloads...")
+        if error is not None:
+            self.set_status("Could not read completed downloads from qBittorrent.")
+            messagebox.showerror("qBittorrent connection failed", str(error))
+            return
+        if not downloads:
+            self.set_status("No completed Blu-ray folders or ISO files found in the audio-bluray category.")
+            messagebox.showinfo(
+                "No completed Blu-ray downloads",
+                "qBittorrent reported no completed Blu-ray folders or ISO files in the configured category.",
+            )
+            return
+        self._show_completed_downloads_dialog(downloads)
+
+    def _show_completed_downloads_dialog(
+        self, downloads: list[qbittorrent.CompletedDownload]
+    ) -> None:
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Completed audio Blu-ray downloads")
+        dialog.geometry("760x500")
+        dialog.transient(self)
+        dialog.grab_set()
+
+        ctk.CTkLabel(
+            dialog,
+            text=f"{len(downloads)} completed Blu-ray source(s) found in qBittorrent:",
+            font=ctk.CTkFont(weight="bold"),
+        ).pack(padx=16, pady=(16, 8), anchor="w")
+
+        scroll = ctk.CTkScrollableFrame(dialog)
+        scroll.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+        selected = tk.IntVar(value=0)
+
+        for index, download in enumerate(downloads):
+            row = ctk.CTkFrame(scroll)
+            row.pack(fill="x", padx=4, pady=4)
+            kind = "ISO image" if download.source_path.suffix.lower() == ".iso" else "Blu-ray folder"
+            size_gib = download.size_bytes / (1024 ** 3)
+            label = f"{download.name}  ({kind}, {size_gib:.1f} GiB)"
+            ctk.CTkRadioButton(
+                row, text=label, variable=selected, value=index,
+                font=ctk.CTkFont(weight="bold"),
+            ).pack(anchor="w", padx=10, pady=(8, 2))
+            ctk.CTkLabel(
+                row, text=str(download.source_path), text_color="gray60",
+                wraplength=690, justify="left",
+            ).pack(anchor="w", padx=34, pady=(0, 8))
+
+        outcome: dict[str, int | None] = {"index": None}
+
+        def use_selected() -> None:
+            outcome["index"] = selected.get()
+            dialog.destroy()
+
+        buttons = ctk.CTkFrame(dialog, fg_color="transparent")
+        buttons.pack(pady=(0, 16))
+        ctk.CTkButton(buttons, text="Cancel", width=110, command=dialog.destroy).pack(
+            side="left", padx=6
+        )
+        ctk.CTkButton(buttons, text="Use selected download", width=190, command=use_selected).pack(
+            side="left", padx=6
+        )
+        dialog.wait_window()
+
+        if outcome["index"] is not None:
+            self._select_completed_download(downloads[outcome["index"]])
+
+    def _select_completed_download(self, download: qbittorrent.CompletedDownload) -> None:
+        source = download.source_path
+        self.album_name_hint = download.name
+        self.download_root_folder = download.download_root
+        self.active_staging_path = None
+        self.active_staged_disc_folder = None
+
+        if source.suffix.lower() == ".iso":
+            staging_root = Path(os.environ.get("ATMOS_STAGING_DIR", "/staging"))
+            self.completed_downloads_button.configure(state="disabled", text="Preparing ISO...")
+            self.set_status(
+                f"Preparing {source.name}: extracting the Blu-ray folder to staging. "
+                "The original ISO will not be changed..."
+            )
+
+            def work() -> None:
+                try:
+                    disc_folder = iso_support.prepare_iso(source, staging_root)
+                    staging_path = iso_support.stage_directory_for(source, staging_root)
+                except Exception as exc:  # noqa: BLE001
+                    self.after(0, lambda err=exc: self._on_completed_download_prepared(None, None, err))
+                    return
+                self.after(
+                    0,
+                    lambda folder=disc_folder, stage=staging_path:
+                        self._on_completed_download_prepared(folder, stage),
+                )
+
+            threading.Thread(target=work, daemon=True).start()
+            return
+
+        def work_folder() -> None:
+            try:
+                disc_folder = iso_support.find_disc_folder(source)
+                if disc_folder is None:
+                    raise RuntimeError(
+                        f"No BDMV/PLAYLIST folder was found inside {source}. "
+                        "The torrent may not contain a ripped Blu-ray folder."
+                    )
+            except Exception as exc:  # noqa: BLE001
+                self.after(0, lambda err=exc: self._on_completed_download_prepared(None, None, err))
+                return
+            self.after(0, lambda folder=disc_folder: self._on_completed_download_prepared(folder, None))
+
+        self.completed_downloads_button.configure(state="disabled", text="Opening...")
+        threading.Thread(target=work_folder, daemon=True).start()
+
+    def _on_completed_download_prepared(
+        self, disc_folder: Path | None, staging_path: Path | None, error: Exception | None = None
+    ) -> None:
+        self.completed_downloads_button.configure(state="normal", text="Completed downloads...")
+        if error is not None or disc_folder is None:
+            self.set_status("Could not prepare the selected Blu-ray download.")
+            messagebox.showerror("Blu-ray source unavailable", str(error or "No disc folder was found."))
+            return
+
+        self.active_staging_path = staging_path
+        self.active_staged_disc_folder = disc_folder if staging_path is not None else None
+        self.source_entry.delete(0, "end")
+        self.source_entry.insert(0, str(disc_folder))
+        self._last_scanned_folder = None
+        self._refresh_resume_banner()
+        self.scan_folder()
+
     def browse_source(self) -> None:
         folder = filedialog.askdirectory(title="Select ripped Blu-ray disc folder")
         if folder:
+            self.active_staging_path = None
+            self.active_staged_disc_folder = None
+            self.album_name_hint = ""
+            self.download_root_folder = None
             self.source_entry.delete(0, "end")
             self.source_entry.insert(0, folder)
             self._refresh_resume_banner()
             self.scan_folder()
 
     def _on_source_entry_changed(self, _event=None) -> None:
+        current = Path(self.source_entry.get().strip()) if self.source_entry.get().strip() else None
+        if self.active_staged_disc_folder is not None and current != self.active_staged_disc_folder:
+            self.active_staging_path = None
+            self.active_staged_disc_folder = None
+        if current is not None and current != self.active_staged_disc_folder:
+            self.album_name_hint = ""
+            self.download_root_folder = None
         self._refresh_resume_banner()
         if self._source_debounce_id is not None:
             self.after_cancel(self._source_debounce_id)
@@ -731,7 +910,16 @@ class AtmosTrackSplitterApp(ctk.CTk):
             status = "No Atmos track found in any playlist."
 
         if self.disc_folder is not None:
-            sidecar_files = extractor.find_sidecar_tracklist_files(self.disc_folder)
+            sidecar_folders = [self.disc_folder]
+            if self.download_root_folder is not None and self.download_root_folder != self.disc_folder:
+                sidecar_folders.append(self.download_root_folder)
+            sidecar_files = []
+            seen_sidecars: set[Path] = set()
+            for folder in sidecar_folders:
+                for sidecar in extractor.find_sidecar_tracklist_files(folder):
+                    if sidecar not in seen_sidecars:
+                        seen_sidecars.add(sidecar)
+                        sidecar_files.append(sidecar)
             if sidecar_files:
                 names = ", ".join(f.name for f in sidecar_files[:3])
                 if len(sidecar_files) > 3:
@@ -863,6 +1051,150 @@ class AtmosTrackSplitterApp(ctk.CTk):
                 "The disc has chapter markers, but only generic labels (e.g. Chapter 01); "
                 "no song titles were embedded."
             )
+
+        self._start_automatic_track_naming(pl, chapters)
+
+    def _start_automatic_track_naming(
+        self, playlist: extractor.Playlist, chapters: list[extractor.Chapter]
+    ) -> None:
+        """Try disc-local tracklists first, then rank MusicBrainz results automatically."""
+        if self.disc_folder is None or not chapters:
+            return
+        job_key = str(playlist.path.resolve())
+        if self._auto_names_started_for == job_key:
+            return
+        self._auto_names_started_for = job_key
+
+        naming_source = Path(self.album_name_hint) if self.album_name_hint else self.disc_folder
+        artist_guess, album_guess, year_guess = extractor.guess_artist_album_year(naming_source)
+        self.album_artist = artist_guess
+        self.album_title = album_guess or extractor.derive_album_folder_name(self.disc_folder)
+        self.album_year = str(year_guess) if year_guess else ""
+        self.musicbrainz_release_id = ""
+        self.set_status(
+            f"Finding track titles for {self.album_artist + ' - ' if self.album_artist else ''}"
+            f"{self.album_title}..."
+        )
+        source_folder = self.disc_folder
+        sidecar_folders = [source_folder]
+        if self.download_root_folder is not None and self.download_root_folder != source_folder:
+            sidecar_folders.append(self.download_root_folder)
+
+        def work() -> None:
+            try:
+                sidecars = []
+                seen_sidecars: set[Path] = set()
+                for folder in sidecar_folders:
+                    for sidecar in extractor.find_sidecar_tracklist_files(folder):
+                        if sidecar not in seen_sidecars:
+                            seen_sidecars.add(sidecar)
+                            sidecars.append(sidecar)
+                best_sidecar = None
+                for sidecar in sidecars:
+                    try:
+                        entries = extractor.load_sidecar_tracklist(sidecar)
+                        match = extractor.match_tracklist_to_chapters(chapters, entries)
+                    except (ValueError, OSError):
+                        continue
+                    rank = (
+                        match.matched_count,
+                        -sum(1 for item in match.matches if item.confidence == "duration_mismatch"),
+                        -abs(len(entries) - len(chapters)),
+                    )
+                    if best_sidecar is None or rank > best_sidecar[0]:
+                        best_sidecar = (rank, sidecar, entries, match)
+
+                minimum_local_matches = max(1, int(len(chapters) * 0.65))
+                if best_sidecar is not None and best_sidecar[0][0] >= minimum_local_matches:
+                    _, sidecar, entries, match = best_sidecar
+                    artwork_candidate = None
+                    # Keep the disc-supplied titles as the naming source, but
+                    # independently try to identify the exact album release
+                    # so its verified front cover can be found after splitting.
+                    if artist_guess and album_guess:
+                        try:
+                            artwork_match = extractor.search_best_musicbrainz_tracklist(
+                                artist_guess, album_guess, year_guess, chapters, limit=8
+                            )
+                            if artwork_match is not None:
+                                artwork_candidate = artwork_match[0]
+                        except Exception:
+                            artwork_candidate = None
+                    payload = {
+                        "source": f"Disc tracklist: {sidecar.name}",
+                        "entries": entries, "match": match,
+                        "candidate": artwork_candidate, "error": None,
+                    }
+                elif artist_guess and album_guess:
+                    result = extractor.search_best_musicbrainz_tracklist(
+                        artist_guess, album_guess, year_guess, chapters, limit=8
+                    )
+                    if result is None:
+                        payload = {
+                            "source": "", "entries": [], "match": None,
+                            "candidate": None, "error": None,
+                        }
+                    else:
+                        candidate, entries, match = result
+                        payload = {
+                            "source": f"MusicBrainz: {candidate.artist} - {candidate.title}",
+                            "entries": entries, "match": match,
+                            "candidate": candidate, "error": None,
+                        }
+                else:
+                    payload = {
+                        "source": "", "entries": [], "match": None,
+                        "candidate": None, "error": None,
+                    }
+            except Exception as exc:
+                payload = {
+                    "source": "", "entries": [], "match": None,
+                    "candidate": None, "error": str(exc),
+                }
+            self.after(0, lambda p=payload, pl=playlist: self._on_automatic_tracklist_found(pl, p))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_automatic_tracklist_found(self, playlist: extractor.Playlist, payload: dict) -> None:
+        if self.selected_playlist is not playlist:
+            return
+        candidate = payload.get("candidate")
+        if candidate is not None:
+            self.album_artist = candidate.artist or self.album_artist
+            self.album_title = candidate.title or self.album_title
+            self.album_year = (candidate.date or "")[:4] or self.album_year
+            self.musicbrainz_release_id = candidate.release_id
+
+        error = payload.get("error")
+        if error:
+            self.set_status(f"Automatic title lookup failed: {error}. You can still enter titles manually.")
+            return
+        result = payload.get("match")
+        source = payload.get("source")
+        if result is None or not source:
+            self.set_status(
+                "No reliable automatic tracklist was found. Check the rip's sidecar files or use manual lookup."
+            )
+            return
+
+        accepted = self._show_tracklist_review_dialog(source, result)
+        if accepted is None:
+            self.set_status("Automatic tracklist ready but not applied; review or enter titles manually.")
+            return
+
+        applied = 0
+        for index, name in accepted.items():
+            if index not in self.chapter_name_vars:
+                continue
+            if self.chapter_name_vars[index].get().strip():
+                continue
+            self.chapter_name_vars[index].set(name)
+            self._mark_chapter_source(index, name)
+            label = self.chapter_source_labels.get(index)
+            if label is not None:
+                label.configure(text="automatic")
+            applied += 1
+        self.set_status(f"Applied {applied} reviewed title(s) from {source}. Confirm names before splitting.")
 
     def _mark_chapter_source(self, index: int, baseline_value: str) -> None:
         """Label a chapter's name as auto-filled, and flip the label to 'edited' if the user changes it."""
@@ -1432,7 +1764,14 @@ class AtmosTrackSplitterApp(ctk.CTk):
         self._stop_editing_output()
 
         source_folder = Path(self.source_entry.get().strip())
-        album_name = extractor.derive_album_folder_name(source_folder)
+        naming_source = Path(self.album_name_hint) if self.album_name_hint else source_folder
+        if self.album_artist and self.album_title:
+            folder_label = f"{self.album_artist} - {self.album_title}"
+            if self.album_year:
+                folder_label += f" ({self.album_year})"
+            album_name = extractor.sanitize_filename(folder_label)
+        else:
+            album_name = extractor.derive_album_folder_name(naming_source)
         output_folder = library_folder / album_name
 
         track_names = {
@@ -1453,6 +1792,9 @@ class AtmosTrackSplitterApp(ctk.CTk):
         resume, do_cleanup_first = resume_choice
         if do_cleanup_first:
             shutil.rmtree(work_folder, ignore_errors=True)
+
+        self.active_output_folder = output_folder
+        self.active_source_folder = source_folder
 
         self._run_extraction_job(
             playlist=self.selected_playlist,
@@ -1623,7 +1965,14 @@ class AtmosTrackSplitterApp(ctk.CTk):
                 if not new_library_folder:
                     continue  # back to the same dialog, nothing changed
                 source_folder = Path(self.source_entry.get().strip())
-                album_name = extractor.derive_album_folder_name(source_folder)
+                if self.album_artist and self.album_title:
+                    folder_label = f"{self.album_artist} - {self.album_title}"
+                    if self.album_year:
+                        folder_label += f" ({self.album_year})"
+                    album_name = extractor.sanitize_filename(folder_label)
+                else:
+                    naming_source = Path(self.album_name_hint) if self.album_name_hint else source_folder
+                    album_name = extractor.derive_album_folder_name(naming_source)
                 output_folder = Path(new_library_folder) / album_name
                 self.output_var.set(new_library_folder)
                 continue
@@ -1692,12 +2041,53 @@ class AtmosTrackSplitterApp(ctk.CTk):
         dialog.wait_window()
         return result["choice"]
 
+    def _generate_album_poster(self) -> None:
+        """Create Plex square artwork and remove temporary ISO staging after a successful job."""
+        staging_path = self.active_staging_path
+        self.active_staging_path = None
+        self.active_staged_disc_folder = None
+        if self.active_source_folder is None or self.active_output_folder is None:
+            if staging_path is not None:
+                shutil.rmtree(staging_path, ignore_errors=True)
+            return
+        if not (self.album_artist or self.album_title):
+            if staging_path is not None:
+                shutil.rmtree(staging_path, ignore_errors=True)
+            return
+        source_folder = self.download_root_folder or self.active_source_folder
+        output_folder = self.active_output_folder
+        artist, album, year = self.album_artist, self.album_title, self.album_year
+        release_id = self.musicbrainz_release_id
+
+        def work() -> None:
+            try:
+                poster_path = poster_art.create_album_poster(
+                    source_folder, output_folder, artist, album, year,
+                    musicbrainz_release_id=release_id,
+                )
+            except Exception as exc:
+                self.after(0, lambda err=exc: self.set_status(f"Tracks split; artwork creation failed: {err}"))
+                return
+            finally:
+                if staging_path is not None:
+                    shutil.rmtree(staging_path, ignore_errors=True)
+            if poster_path is None:
+                self.after(0, lambda: self.set_status(
+                    "Tracks split successfully. No verified front-cover artwork was found; artwork skipped."
+                ))
+                return
+            self.after(0, lambda: self.set_status(
+                f"Complete. Plex album artwork saved as {poster_path.name} (1000 x 1000)."
+            ))
+        threading.Thread(target=work, daemon=True).start()
+
     def _on_extraction_complete(self, results: list[Path]) -> None:
         self.extract_button.configure(state="normal", text="Extract & Split")
         self.cancel_button.configure(state="disabled", text="Cancel")
         self.cancel_event = None
         self.set_status(f"Done. Wrote {len(results)} files to {self.output_var.get()}")
         messagebox.showinfo("Done", f"Wrote {len(results)} track files.")
+        self._generate_album_poster()
         self._refresh_resume_banner()
 
     def _on_extraction_failed(self, exc: Exception) -> None:
@@ -1724,8 +2114,15 @@ class AtmosTrackSplitterApp(ctk.CTk):
         source_str = self.source_entry.get().strip()
         if not output_str or not source_str:
             return None
+        naming_source = Path(self.album_name_hint) if self.album_name_hint else Path(source_str)
         try:
-            album_name = extractor.derive_album_folder_name(Path(source_str))
+            if self.album_artist and self.album_title:
+                folder_label = f"{self.album_artist} - {self.album_title}"
+                if self.album_year:
+                    folder_label += f" ({self.album_year})"
+                album_name = extractor.sanitize_filename(folder_label)
+            else:
+                album_name = extractor.derive_album_folder_name(naming_source)
         except Exception:
             return None
         return Path(output_str) / album_name

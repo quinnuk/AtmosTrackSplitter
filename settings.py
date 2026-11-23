@@ -9,6 +9,7 @@ doesn't have to re-browse every time.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -19,8 +20,8 @@ DEFAULTS: dict[str, Any] = {
     "mkvextract_path": "mkvextract",
     "ffmpeg_path": "ffmpeg",
     "ffprobe_path": "ffprobe",
-    "last_source_folder": "",
-    "last_output_folder": "",
+    "last_source_folder": os.environ.get("ATMOS_RIPS_DIR", ""),
+    "last_output_folder": os.environ.get("ATMOS_OUTPUT_DIR", ""),
     "output_container": "mkv",   # or "m4a" / "flac" if a re-encode step is ever added
     "watch_folder_enabled": False,
     "watch_folder_path": "",

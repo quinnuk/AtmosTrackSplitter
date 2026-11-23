@@ -4,7 +4,7 @@
 
 **Split a ripped Blu-ray concert/music disc into individual, chapter-named Dolby Atmos song files — without ever re-encoding the audio.**
 
-![Platform](https://img.shields.io/badge/platform-Windows-lightgrey)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Debian-lightgrey)
 ![Python](https://img.shields.io/badge/python-3.10%2B-3776AB)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -101,6 +101,74 @@ python main.py
 ```
 
 > **Note:** if you launch it from PowerShell/cmd, the app is a child process of that terminal — closing the terminal window kills the app too, even mid-extraction. Run it with `pythonw main.py` (fully detached, no console) instead, or build the standalone `.exe` below.
+
+
+## Debian Docker edition
+
+The Debian container runs the existing desktop interface in a browser-accessible
+Linux desktop. It keeps the MKVToolNix/FFmpeg stream-copy workflow: video and
+Dolby TrueHD Atmos are not re-encoded.
+
+### qBittorrent workflow
+
+Create a qBittorrent category named `audio-bluray` and give it a dedicated
+save location. The Docker app reads the qBittorrent Web API and lists completed
+downloads from that category. It only reads torrent information; it does not
+pause, rename, move, remove, or change seeding settings.
+
+Use **Completed downloads...** in the app to select a finished Blu-ray source.
+It detects ripped BDMV folders and ISO files, including disc folders nested
+inside a multi-file torrent. You still choose when to process an album and
+review suggested track titles before extraction.
+
+### Folder and ISO support
+
+- The qBittorrent download folder is mounted read-only at `/rips`. The
+  original downloads are never changed, so qBittorrent can continue seeding.
+- Blu-ray ISO images are read using Debian's `7zip` command-line tool. The
+  app extracts the BDMV directory to a separate staging folder; it does not
+  mount the ISO or require privileged-container access.
+- ISO preparation needs free space approximately equal to the ISO size plus
+  at least 512 MiB. The original ISO remains in the qBittorrent download
+  folder.
+- The writable staging directory should be on the same storage pool as the
+  downloads. A failed or cancelled split keeps its staging data to allow
+  recovery; after a successful split, temporary ISO staging is removed.
+- The finished album folder is written beneath the host's existing Plex Music
+  Videos path. Track files use `01 - Track title.mkv` naming and the artwork
+  routine creates a square `folder.jpg` at 1000 x 1000 pixels.
+
+### Configuration
+
+Copy `.env.example` to `.env`, then set the following:
+
+- `QBITTORRENT_URL`: qBittorrent Web UI address reachable from the Docker
+  container, such as `http://192.168.0.89:8080`.
+- `QBITTORRENT_USERNAME` and `QBITTORRENT_PASSWORD`: the Web UI login.
+- `QBITTORRENT_CATEGORY`: normally `audio-bluray`.
+- `QBITTORRENT_CONTENT_ROOT`: the category's absolute download path **as
+  qBittorrent sees it inside its own container**. For example,
+  `/downloads/audio-bluray`. This is not the Dell host path.
+- `RIPS_PATH`: the corresponding host directory containing that category.
+- `STAGING_PATH`: a writable host directory for extracted ISO contents.
+- `MUSIC_VIDEOS_PATH`: the host's Plex Music Videos library directory.
+
+The example paths in `.env.example` match the intended Dell layout. Check
+the actual qBittorrent container download path before relying on the
+`QBITTORRENT_CONTENT_ROOT` example. Keep qBittorrent's Web UI on your trusted
+home network and do not expose it or this application directly to the internet.
+
+The browser desktop requires `CUSTOM_USER` and `PASSWORD` for its own login.
+Then run:
+
+```bash
+docker compose up -d --build
+```
+
+Open `https://SERVER-IP:3001` in a browser. The first visit may show a
+certificate warning because Webtop uses its own certificate. App settings and
+jobs persist in `./config`. The Blu-ray download mount must be read-only;
+the staging and Music Videos mounts must be read/write.
 
 ## Building a standalone .exe
 
