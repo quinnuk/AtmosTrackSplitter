@@ -15,8 +15,9 @@ services:
       - ./config:/config
       - ${RIPS_PATH:?Set RIPS_PATH in .env}:/rips:ro
       - ${MUSIC_VIDEOS_PATH:?Set MUSIC_VIDEOS_PATH in .env}:/music-videos:rw
+    environment:
+      TITLE: Atmos Track Splitter
     ports:
-      - "3000:3000"
       - "3001:3001"
     shm_size: "1gb"
     restart: unless-stopped
