@@ -119,10 +119,11 @@ Dolby TrueHD Atmos are not re-encoded.
 - Track suggestions are reviewed before use. The app does not guess through a
   poor match or overwrite existing files silently.
 - After a successful split, the app looks for a local front cover or the front
-  image belonging to the selected MusicBrainz release and creates poster.jpg
-  at 1000 x 1500, plus a square 1000 x 1000 cover.jpg for Plex Music album artwork. The square source cover is kept whole in the portrait design.
-  If no confirmed artwork is available, tracks still complete and the poster
-  is skipped.
+  image belonging to the selected MusicBrainz release and creates a square
+  1000 x 1000 folder.jpg in the album folder. This matches the existing
+  Music Videos folder layout and Plex's recognised local album-art naming.
+  If no confirmed artwork is available, the tracks still complete and artwork
+  generation is skipped.
 
 Copy .env.example to .env, set RIPS_PATH and MUSIC_VIDEOS_PATH, and replace
 the example PASSWORD with a long unique password. The browser desktop requires
