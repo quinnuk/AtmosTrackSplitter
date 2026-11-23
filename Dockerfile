@@ -8,6 +8,7 @@ ENV APP_DIR=/app \
     ATMOS_OUTPUT_DIR=/music-videos
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+      7zip \
       ffmpeg \
       fonts-dejavu-core \
       mkvtoolnix \
