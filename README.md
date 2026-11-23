@@ -4,7 +4,7 @@
 
 **Split a ripped Blu-ray concert/music disc into individual, chapter-named Dolby Atmos song files — without ever re-encoding the audio.**
 
-![Platform](https://img.shields.io/badge/platform-Windows-lightgrey)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Debian-lightgrey)
 ![Python](https://img.shields.io/badge/python-3.10%2B-3776AB)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -101,6 +101,39 @@ python main.py
 ```
 
 > **Note:** if you launch it from PowerShell/cmd, the app is a child process of that terminal — closing the terminal window kills the app too, even mid-extraction. Run it with `pythonw main.py` (fully detached, no console) instead, or build the standalone `.exe` below.
+
+
+## Debian Docker edition
+
+The Debian container runs the existing desktop interface in a browser-accessible
+Linux desktop. It keeps the MKVToolNix/FFmpeg stream-copy workflow: video and
+Dolby TrueHD Atmos are not re-encoded.
+
+- Put each ripped disc folder below the host rip directory. The rip mount is
+  read-only inside the container.
+- Set the host's existing Plex Music Videos directory in the Docker environment;
+  completed tracks are written to a named album subfolder.
+- If the source directory is named Artist - Album (Year), the app uses that
+  information to find a release automatically. Disc-supplied .cue, .txt, .nfo,
+  and JSON tracklists are tried first; MusicBrainz is the online fallback.
+- Track suggestions are reviewed before use. The app does not guess through a
+  poor match or overwrite existing files silently.
+- After a successful split, the app looks for a local front cover or the front
+  image belonging to the selected MusicBrainz release and creates poster.jpg
+  at 1000 x 1500. The square source cover is kept whole in the portrait design.
+  If no confirmed artwork is available, tracks still complete and the poster
+  is skipped.
+
+Copy .env.example to .env, set RIPS_PATH and MUSIC_VIDEOS_PATH, then run:
+
+\`\`\`bash
+docker compose up -d --build
+\`\`\`
+
+Open http://SERVER-IP:3000 in a browser. App settings and jobs persist in
+./config. The Music Videos mount must be read/write; the Blu-ray rip mount is
+read-only.
+
 
 ## Building a standalone .exe
 
