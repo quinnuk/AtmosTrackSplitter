@@ -109,41 +109,66 @@ The Debian container runs the existing desktop interface in a browser-accessible
 Linux desktop. It keeps the MKVToolNix/FFmpeg stream-copy workflow: video and
 Dolby TrueHD Atmos are not re-encoded.
 
-- Put each ripped disc folder below the host rip directory. The rip mount is
-  read-only inside the container.
-- Set the host's existing Plex Music Videos directory in the Docker environment;
-  completed tracks are written to a named album subfolder.
-- If the source directory is named Artist - Album (Year), the app uses that
-  information to find a release automatically. Disc-supplied .cue, .txt, .nfo,
-  and JSON tracklists are tried first; MusicBrainz is the online fallback.
-- Track suggestions are reviewed before use. The app does not guess through a
-  poor match or overwrite existing files silently.
-- After a successful split, the app looks for a local front cover or the front
-  image belonging to the selected MusicBrainz release and creates a square
-  1000 x 1000 folder.jpg in the album folder. This matches the existing
-  Music Videos folder layout and Plex's recognised local album-art naming.
-  If no confirmed artwork is available, the tracks still complete and artwork
-  generation is skipped.
+### qBittorrent workflow
 
-Copy .env.example to .env, set RIPS_PATH and MUSIC_VIDEOS_PATH, and replace
-the example PASSWORD with a long unique password. The browser desktop requires
-CUSTOM_USER and PASSWORD for HTTP Basic authentication. Keep this service on
-your trusted home network; do not expose it directly to the internet.
+Create a qBittorrent category named `audio-bluray` and give it a dedicated
+save location. The Docker app reads the qBittorrent Web API and lists completed
+downloads from that category. It only reads torrent information; it does not
+pause, rename, move, remove, or change seeding settings.
 
-The output directory defaults to /music-videos in the container, so the app
-opens with that as its destination. You browse to the required ripped-disc
-folder under /rips for each job.
+Use **Completed downloads...** in the app to select a finished Blu-ray source.
+It detects ripped BDMV folders and ISO files, including disc folders nested
+inside a multi-file torrent. You still choose when to process an album and
+review suggested track titles before extraction.
 
+### Folder and ISO support
+
+- The qBittorrent download folder is mounted read-only at `/rips`. The
+  original downloads are never changed, so qBittorrent can continue seeding.
+- Blu-ray ISO images are read using Debian's `7zip` command-line tool. The
+  app extracts the BDMV directory to a separate staging folder; it does not
+  mount the ISO or require privileged-container access.
+- ISO preparation needs free space approximately equal to the ISO size plus
+  at least 512 MiB. The original ISO remains in the qBittorrent download
+  folder.
+- The writable staging directory should be on the same storage pool as the
+  downloads. A failed or cancelled split keeps its staging data to allow
+  recovery; after a successful split, temporary ISO staging is removed.
+- The finished album folder is written beneath the host's existing Plex Music
+  Videos path. Track files use `01 - Track title.mkv` naming and the artwork
+  routine creates a square `folder.jpg` at 1000 x 1000 pixels.
+
+### Configuration
+
+Copy `.env.example` to `.env`, then set the following:
+
+- `QBITTORRENT_URL`: qBittorrent Web UI address reachable from the Docker
+  container, such as `http://192.168.0.89:8080`.
+- `QBITTORRENT_USERNAME` and `QBITTORRENT_PASSWORD`: the Web UI login.
+- `QBITTORRENT_CATEGORY`: normally `audio-bluray`.
+- `QBITTORRENT_CONTENT_ROOT`: the category's absolute download path **as
+  qBittorrent sees it inside its own container**. For example,
+  `/downloads/audio-bluray`. This is not the Dell host path.
+- `RIPS_PATH`: the corresponding host directory containing that category.
+- `STAGING_PATH`: a writable host directory for extracted ISO contents.
+- `MUSIC_VIDEOS_PATH`: the host's Plex Music Videos library directory.
+
+The example paths in `.env.example` match the intended Dell layout. Check
+the actual qBittorrent container download path before relying on the
+`QBITTORRENT_CONTENT_ROOT` example. Keep qBittorrent's Web UI on your trusted
+home network and do not expose it or this application directly to the internet.
+
+The browser desktop requires `CUSTOM_USER` and `PASSWORD` for its own login.
 Then run:
 
 ```bash
 docker compose up -d --build
 ```
 
-Open https://SERVER-IP:3001 in a browser. The first visit may show a certificate warning because Webtop uses its own certificate. App settings and jobs persist in
-./config. The Music Videos mount must be read/write; the Blu-ray rip mount is
-read-only.
-
+Open `https://SERVER-IP:3001` in a browser. The first visit may show a
+certificate warning because Webtop uses its own certificate. App settings and
+jobs persist in `./config`. The Blu-ray download mount must be read-only;
+the staging and Music Videos mounts must be read/write.
 
 ## Building a standalone .exe
 
