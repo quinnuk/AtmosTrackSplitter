@@ -151,6 +151,22 @@ def create_plex_poster(
     return output_path
 
 
+def create_square_cover(source_image: bytes | Path, output_path: Path) -> Path:
+    """Create a 1000x1000 JPEG cover for Plex Music album artwork."""
+    if isinstance(source_image, Path):
+        image = Image.open(source_image)
+    else:
+        image = Image.open(io.BytesIO(source_image))
+    with image:
+        cover = ImageOps.exif_transpose(image).convert("RGB")
+        if cover.width < 100 or cover.height < 100:
+            raise ValueError("The album cover is too small to make a clean cover image.")
+        square = ImageOps.fit(cover, (1000, 1000), method=Image.Resampling.LANCZOS)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        square.save(output_path, format="JPEG", quality=94, optimize=True, subsampling=0)
+    return output_path
+
+
 def create_album_poster(
     source_folder: Path,
     output_folder: Path,
@@ -161,14 +177,20 @@ def create_album_poster(
 ) -> Optional[Path]:
     """Prefer rip-local cover art, then the exact MusicBrainz release's front cover."""
     output_path = output_folder / "poster.jpg"
-    if output_path.exists():
+    square_path = output_folder / "cover.jpg"
+    if output_path.exists() and square_path.exists():
         return output_path
 
     local_cover = find_local_cover(source_folder)
-    if local_cover is not None:
-        return create_plex_poster(local_cover, output_path, artist, album, year)
+    image_source: bytes | Path | None = local_cover
+    if image_source is None:
+        image_source = fetch_musicbrainz_front_cover(musicbrainz_release_id)
+    if image_source is None:
+        return output_path if output_path.exists() else None
 
-    image_bytes = fetch_musicbrainz_front_cover(musicbrainz_release_id)
-    if image_bytes is None:
-        return None
-    return create_plex_poster(image_bytes, output_path, artist, album, year)
+    output_folder.mkdir(parents=True, exist_ok=True)
+    if not square_path.exists():
+        create_square_cover(image_source, square_path)
+    if not output_path.exists():
+        create_plex_poster(image_source, output_path, artist, album, year)
+    return output_path
