@@ -4,15 +4,15 @@ services:
     image: quinnuk/atmos-track-splitter:debian
     container_name: atmos-track-splitter
     environment:
-      PUID: \${PUID:-1000}
-      PGID: \${PGID:-1000}
-      TZ: \${TZ:-Europe/London}
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      TZ: ${TZ:-Europe/London}
       ATMOS_RIPS_DIR: /rips
       ATMOS_OUTPUT_DIR: /music-videos
     volumes:
       - ./config:/config
-      - \${RIPS_PATH:?Set RIPS_PATH in .env}:/rips:ro
-      - \${MUSIC_VIDEOS_PATH:?Set MUSIC_VIDEOS_PATH in .env}:/music-videos:rw
+      - ${RIPS_PATH:?Set RIPS_PATH in .env}:/rips:ro
+      - ${MUSIC_VIDEOS_PATH:?Set MUSIC_VIDEOS_PATH in .env}:/music-videos:rw
     ports:
       - "3000:3000"
       - "3001:3001"
