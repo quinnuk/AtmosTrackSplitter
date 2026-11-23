@@ -1564,6 +1564,57 @@ def fetch_musicbrainz_tracklist(
     return entries
 
 
+def search_best_musicbrainz_tracklist(
+    artist: str,
+    album_title: str,
+    year: Optional[int],
+    chapters: list[Chapter],
+    limit: int = 8,
+) -> Optional[tuple[MusicBrainzCandidate, list[TracklistEntry], TracklistMatchResult]]:
+    """
+    Search MusicBrainz and rank actual release media against scanned Blu-ray
+    chapters. Track-count agreement is strongest, followed by chapter/title
+    alignment, duration agreement, a Blu-ray format hint, and MB relevance.
+    Returns a proposal only; the GUI must review it before applying names.
+    """
+    candidates = search_musicbrainz_releases(artist, album_title, year, limit=limit)
+    ranked = []
+    failures: list[str] = []
+    for candidate in candidates:
+        try:
+            entries = fetch_musicbrainz_tracklist(
+                candidate.release_id, expected_track_count=len(chapters)
+            )
+        except Exception as exc:
+            failures.append(f"{candidate.title}: {exc}")
+            continue
+        if not entries:
+            continue
+        match = match_tracklist_to_chapters(chapters, entries)
+        count_delta = abs(len(entries) - len(chapters))
+        unmatched = sum(1 for item in match.matches if item.confidence == "no_match")
+        duration_mismatches = sum(
+            1 for item in match.matches if item.confidence == "duration_mismatch"
+        )
+        fmt = candidate.format_hint.lower()
+        blu_ray_penalty = 0 if ("blu-ray" in fmt or "bluray" in fmt) else 1
+        rank = (
+            count_delta, unmatched, duration_mismatches,
+            blu_ray_penalty, -candidate.score,
+        )
+        ranked.append((rank, candidate, entries, match))
+    if not ranked:
+        if candidates and failures:
+            raise RuntimeError(
+                "MusicBrainz found releases, but their tracklists could not be read. "
+                + "; ".join(failures[:2])
+            )
+        return None
+    ranked.sort(key=lambda item: item[0])
+    _, candidate, entries, match = ranked[0]
+    return candidate, entries, match
+
+
 # ---------------------------------------------------------------------------
 # Splitting: Atmos MKV + chapters -> individual named files
 # ---------------------------------------------------------------------------
