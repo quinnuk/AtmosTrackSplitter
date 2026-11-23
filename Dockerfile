@@ -20,10 +20,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR ${APP_DIR}
 COPY . ${APP_DIR}
+COPY start-app.sh /usr/local/bin/atmos-track-splitter
 
 RUN python3 -m venv ${VENV_DIR} \
     && ${VENV_DIR}/bin/pip install --no-cache-dir --upgrade pip \
-    && ${VENV_DIR}/bin/pip install --no-cache-dir -r requirements.txt \
+    && ${VENV_DIR}/bin/pip install --no-cache-dir -r requirements-docker.txt \
     && printf '%s\n' \
       '[Desktop Entry]' \
       'Type=Application' \
@@ -33,12 +34,6 @@ RUN python3 -m venv ${VENV_DIR} \
       'Terminal=false' \
       'X-GNOME-Autostart-enabled=true' \
       > /etc/xdg/autostart/atmos-track-splitter.desktop \
-    && printf '%s\n' \
-      '#!/usr/bin/env bash' \
-      'export HOME=/config' \
-      'cd /app' \
-      'exec /opt/atmos-venv/bin/python /app/main.py' \
-      > /usr/local/bin/atmos-track-splitter \
     && chmod 0755 /usr/local/bin/atmos-track-splitter
 
 EXPOSE 3000 3001
