@@ -120,7 +120,7 @@ Dolby TrueHD Atmos are not re-encoded.
   poor match or overwrite existing files silently.
 - After a successful split, the app looks for a local front cover or the front
   image belonging to the selected MusicBrainz release and creates poster.jpg
-  at 1000 x 1500. The square source cover is kept whole in the portrait design.
+  at 1000 x 1500, plus a square 1000 x 1000 cover.jpg for Plex Music album artwork. The square source cover is kept whole in the portrait design.
   If no confirmed artwork is available, tracks still complete and the poster
   is skipped.
 
