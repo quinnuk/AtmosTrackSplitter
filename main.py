@@ -1875,7 +1875,7 @@ class AtmosTrackSplitterApp(ctk.CTk):
                 ))
                 return
             self.after(0, lambda: self.set_status(
-                f"Complete. Plex poster saved as {poster_path.name} (1000 x 1500)."
+                f"Complete. Plex album artwork saved as {poster_path.name} (1000 x 1000)."
             ))
         threading.Thread(target=work, daemon=True).start()
 
