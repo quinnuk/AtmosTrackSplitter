@@ -42,8 +42,8 @@ class IsoSupportTests(unittest.TestCase):
                     return CompletedProcess(
                         command, 0,
                         stdout=(
-                            "Path = BDMV/PLAYLIST/00000.mpls\\n"
-                            "Path = BDMV/PLAYLIST/00001.mpls\\n"
+                            "Path = BDMV/PLAYLIST/00000.mpls\n"
+                            "Path = BDMV/PLAYLIST/00001.mpls\n"
                         ),
                         stderr="",
                     )
