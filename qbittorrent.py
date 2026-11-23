@@ -32,7 +32,10 @@ class CompletedDownload:
 def _api_request(opener, base_url: str, endpoint: str, data: dict[str, str] | None = None) -> bytes:
     url = urljoin(base_url.rstrip("/") + "/", endpoint.lstrip("/"))
     payload = urlencode(data).encode("utf-8") if data is not None else None
-    request = Request(url, data=payload, headers={\n        "User-Agent": "AtmosTrackSplitter/1.0",\n        "Referer": base_url.rstrip("/") + "/",\n    })
+    request = Request(url, data=payload, headers={
+        "User-Agent": "AtmosTrackSplitter/1.0",
+        "Referer": base_url.rstrip("/") + "/",
+    })
     try:
         with opener.open(request, timeout=20) as response:
             return response.read(10 * 1024 * 1024 + 1)
