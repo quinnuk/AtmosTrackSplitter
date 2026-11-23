@@ -99,7 +99,7 @@ def prepare_iso(iso_path: Path, staging_root: Path) -> Path:
 
     tool = _seven_zip()
     listing = subprocess.run(
-        [tool, "l", "-slt", str(iso_path)],
+        [tool, "l", "-slt", str(iso_path), "BDMV/PLAYLIST/*.mpls"],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
         stdin=subprocess.DEVNULL, timeout=180,
     )
@@ -115,13 +115,21 @@ def prepare_iso(iso_path: Path, staging_root: Path) -> Path:
             continue
         value = line[7:].replace("\\", "/").lstrip("/")
         parts = Path(value).parts
-        if parts and parts[0].casefold() == "bdmv":
+        if (
+            len(parts) >= 3
+            and parts[0].casefold() == "bdmv"
+            and parts[1].casefold() == "playlist"
+            and parts[-1].lower().endswith(".mpls")
+        ):
             bdmv_roots.add(parts[0])
     if not bdmv_roots:
         raise RuntimeError("No BDMV folder was found inside this ISO. It may not be a Blu-ray disc image.")
 
     stage.mkdir(parents=True, exist_ok=True)
-    command = [tool, "x", "-y", f"-o{stage}", str(iso_path), *sorted(bdmv_roots)]
+    command = [
+        tool, "x", "-y", "-bso0", "-bsp0", f"-o{stage}", str(iso_path),
+        *sorted(bdmv_roots),
+    ]
     try:
         extracted = subprocess.run(
             command, capture_output=True, text=True, encoding="utf-8", errors="replace",
