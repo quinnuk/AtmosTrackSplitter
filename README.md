@@ -126,9 +126,9 @@ Dolby TrueHD Atmos are not re-encoded.
 
 Copy .env.example to .env, set RIPS_PATH and MUSIC_VIDEOS_PATH, then run:
 
-\`\`\`bash
+```bash
 docker compose up -d --build
-\`\`\`
+```
 
 Open http://SERVER-IP:3000 in a browser. App settings and jobs persist in
 ./config. The Music Videos mount must be read/write; the Blu-ray rip mount is
