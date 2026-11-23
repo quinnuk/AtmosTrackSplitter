@@ -83,6 +83,7 @@ class QbittorrentTests(unittest.TestCase):
             self.assertEqual(len(result), 1)
             self.assertEqual(result[0].name, "Test Artist - Test Album")
             self.assertEqual(result[0].source_path, disc)
+            self.assertEqual(result[0].download_root, root / "Test Artist - Test Album")
             self.assertEqual(_FakeQbittorrentHandler.observed_query.get("filter"), ["completed"])
             self.assertEqual(_FakeQbittorrentHandler.observed_query.get("category"), ["audio-bluray"])
             self.assertEqual(_FakeQbittorrentHandler.observed_referer, url + "/")
