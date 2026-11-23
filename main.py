@@ -917,10 +917,23 @@ class AtmosTrackSplitterApp(ctk.CTk):
                 minimum_local_matches = max(1, int(len(chapters) * 0.65))
                 if best_sidecar is not None and best_sidecar[0][0] >= minimum_local_matches:
                     _, sidecar, entries, match = best_sidecar
+                    artwork_candidate = None
+                    # Keep the disc-supplied titles as the naming source, but
+                    # independently try to identify the exact album release
+                    # so its verified front cover can be found after splitting.
+                    if artist_guess and album_guess:
+                        try:
+                            artwork_match = extractor.search_best_musicbrainz_tracklist(
+                                artist_guess, album_guess, year_guess, chapters, limit=8
+                            )
+                            if artwork_match is not None:
+                                artwork_candidate = artwork_match[0]
+                        except Exception:
+                            artwork_candidate = None
                     payload = {
                         "source": f"Disc tracklist: {sidecar.name}",
                         "entries": entries, "match": match,
-                        "candidate": None, "error": None,
+                        "candidate": artwork_candidate, "error": None,
                     }
                 elif artist_guess and album_guess:
                     result = extractor.search_best_musicbrainz_tracklist(
@@ -1761,7 +1774,13 @@ class AtmosTrackSplitterApp(ctk.CTk):
                 if not new_library_folder:
                     continue  # back to the same dialog, nothing changed
                 source_folder = Path(self.source_entry.get().strip())
-                album_name = extractor.derive_album_folder_name(source_folder)
+                if self.album_artist and self.album_title:
+                    folder_label = f"{self.album_artist} - {self.album_title}"
+                    if self.album_year:
+                        folder_label += f" ({self.album_year})"
+                    album_name = extractor.sanitize_filename(folder_label)
+                else:
+                    album_name = extractor.derive_album_folder_name(source_folder)
                 output_folder = Path(new_library_folder) / album_name
                 self.output_var.set(new_library_folder)
                 continue
@@ -1894,7 +1913,13 @@ class AtmosTrackSplitterApp(ctk.CTk):
         if not output_str or not source_str:
             return None
         try:
-            album_name = extractor.derive_album_folder_name(Path(source_str))
+            if self.album_artist and self.album_title:
+                folder_label = f"{self.album_artist} - {self.album_title}"
+                if self.album_year:
+                    folder_label += f" ({self.album_year})"
+                album_name = extractor.sanitize_filename(folder_label)
+            else:
+                album_name = extractor.derive_album_folder_name(Path(source_str))
         except Exception:
             return None
         return Path(output_str) / album_name
