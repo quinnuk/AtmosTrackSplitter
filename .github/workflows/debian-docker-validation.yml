@@ -23,8 +23,8 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements-docker.txt
       - name: Compile Python files
-        run: python -m compileall -q main.py extractor.py settings.py poster_art.py
-      - name: Test generated Plex album artwork
+        run: python -m compileall -q main.py extractor.py settings.py poster_art.py qbittorrent.py iso_support.py
+      - name: Run unit tests\n        run: python -m unittest discover -s tests -v\n      - name: Test generated Plex album artwork
         run: |
           python - <<'PY'
           from pathlib import Path
