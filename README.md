@@ -124,7 +124,16 @@ Dolby TrueHD Atmos are not re-encoded.
   If no confirmed artwork is available, tracks still complete and the poster
   is skipped.
 
-Copy .env.example to .env, set RIPS_PATH and MUSIC_VIDEOS_PATH, then run:
+Copy .env.example to .env, set RIPS_PATH and MUSIC_VIDEOS_PATH, and replace
+the example PASSWORD with a long unique password. The browser desktop requires
+CUSTOM_USER and PASSWORD for HTTP Basic authentication. Keep this service on
+your trusted home network; do not expose it directly to the internet.
+
+The output directory defaults to /music-videos in the container, so the app
+opens with that as its destination. You browse to the required ripped-disc
+folder under /rips for each job.
+
+Then run:
 
 ```bash
 docker compose up -d --build
