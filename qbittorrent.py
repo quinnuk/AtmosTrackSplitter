@@ -32,7 +32,7 @@ class CompletedDownload:
 def _api_request(opener, base_url: str, endpoint: str, data: dict[str, str] | None = None) -> bytes:
     url = urljoin(base_url.rstrip("/") + "/", endpoint.lstrip("/"))
     payload = urlencode(data).encode("utf-8") if data is not None else None
-    request = Request(url, data=payload, headers={"User-Agent": "AtmosTrackSplitter/1.0"})
+    request = Request(url, data=payload, headers={\n        "User-Agent": "AtmosTrackSplitter/1.0",\n        "Referer": base_url.rstrip("/") + "/",\n    })
     try:
         with opener.open(request, timeout=20) as response:
             return response.read(10 * 1024 * 1024 + 1)
@@ -170,7 +170,7 @@ def list_completed_disc_downloads(
         if not isinstance(torrent, dict):
             continue
         # Keep the completion check explicit even though the API request is filtered.
-        if float(torrent.get("progress", 0)) < 0.999999 or int(torrent.get("amount_left", 0)) > 0:
+        if float(torrent.get("progress") or 0) < 0.999999 or int(torrent.get("amount_left") or 0) > 0:
             continue
         remote_path = str(torrent.get("content_path") or "").strip()
         if not remote_path:
