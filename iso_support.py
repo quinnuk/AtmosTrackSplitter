@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -25,7 +26,7 @@ def find_disc_folder(path: Path, max_depth: int = 5) -> Path | None:
         return path.parent
 
     matches: list[Path] = []
-    for current_text, dirs, _files in __import__("os").walk(path, followlinks=False):
+    for current_text, dirs, _files in os.walk(path, followlinks=False):
         current = Path(current_text)
         depth = len(current.relative_to(path).parts)
         dirs[:] = [d for d in dirs if d != ".atmos-staging" and not (current / d).is_symlink()]
