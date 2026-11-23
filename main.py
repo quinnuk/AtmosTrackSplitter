@@ -255,6 +255,7 @@ class AtmosTrackSplitterApp(ctk.CTk):
         self.active_staging_path: Path | None = None
         self.active_staged_disc_folder: Path | None = None
         self.album_name_hint = ""
+        self.download_root_folder: Path | None = None
 
         self._apply_tool_paths()
         self._build_layout()
@@ -725,6 +726,7 @@ class AtmosTrackSplitterApp(ctk.CTk):
     def _select_completed_download(self, download: qbittorrent.CompletedDownload) -> None:
         source = download.source_path
         self.album_name_hint = download.name
+        self.download_root_folder = download.download_root
         self.active_staging_path = None
         self.active_staged_disc_folder = None
 
@@ -791,6 +793,7 @@ class AtmosTrackSplitterApp(ctk.CTk):
             self.active_staging_path = None
             self.active_staged_disc_folder = None
             self.album_name_hint = ""
+            self.download_root_folder = None
             self.source_entry.delete(0, "end")
             self.source_entry.insert(0, folder)
             self._refresh_resume_banner()
@@ -801,8 +804,9 @@ class AtmosTrackSplitterApp(ctk.CTk):
         if self.active_staged_disc_folder is not None and current != self.active_staged_disc_folder:
             self.active_staging_path = None
             self.active_staged_disc_folder = None
-        if current is not None and not self.active_staged_disc_folder:
+        if current is not None and current != self.active_staged_disc_folder:
             self.album_name_hint = ""
+            self.download_root_folder = None
         self._refresh_resume_banner()
         if self._source_debounce_id is not None:
             self.after_cancel(self._source_debounce_id)
@@ -906,7 +910,16 @@ class AtmosTrackSplitterApp(ctk.CTk):
             status = "No Atmos track found in any playlist."
 
         if self.disc_folder is not None:
-            sidecar_files = extractor.find_sidecar_tracklist_files(self.disc_folder)
+            sidecar_folders = [self.disc_folder]
+            if self.download_root_folder is not None and self.download_root_folder != self.disc_folder:
+                sidecar_folders.append(self.download_root_folder)
+            sidecar_files = []
+            seen_sidecars: set[Path] = set()
+            for folder in sidecar_folders:
+                for sidecar in extractor.find_sidecar_tracklist_files(folder):
+                    if sidecar not in seen_sidecars:
+                        seen_sidecars.add(sidecar)
+                        sidecar_files.append(sidecar)
             if sidecar_files:
                 names = ", ".join(f.name for f in sidecar_files[:3])
                 if len(sidecar_files) > 3:
@@ -1063,10 +1076,19 @@ class AtmosTrackSplitterApp(ctk.CTk):
             f"{self.album_title}..."
         )
         source_folder = self.disc_folder
+        sidecar_folders = [source_folder]
+        if self.download_root_folder is not None and self.download_root_folder != source_folder:
+            sidecar_folders.append(self.download_root_folder)
 
         def work() -> None:
             try:
-                sidecars = extractor.find_sidecar_tracklist_files(source_folder)
+                sidecars = []
+                seen_sidecars: set[Path] = set()
+                for folder in sidecar_folders:
+                    for sidecar in extractor.find_sidecar_tracklist_files(folder):
+                        if sidecar not in seen_sidecars:
+                            seen_sidecars.add(sidecar)
+                            sidecars.append(sidecar)
                 best_sidecar = None
                 for sidecar in sidecars:
                     try:
@@ -2032,7 +2054,7 @@ class AtmosTrackSplitterApp(ctk.CTk):
             if staging_path is not None:
                 shutil.rmtree(staging_path, ignore_errors=True)
             return
-        source_folder = self.active_source_folder
+        source_folder = self.download_root_folder or self.active_source_folder
         output_folder = self.active_output_folder
         artist, album, year = self.album_artist, self.album_title, self.album_year
         release_id = self.musicbrainz_release_id
