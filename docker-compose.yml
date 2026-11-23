@@ -11,10 +11,17 @@ services:
       PASSWORD: ${PASSWORD:?Set a strong PASSWORD in .env}
       ATMOS_RIPS_DIR: /rips
       ATMOS_OUTPUT_DIR: /music-videos
+      ATMOS_STAGING_DIR: /staging
+      QBITTORRENT_URL: ${QBITTORRENT_URL:-}
+      QBITTORRENT_USERNAME: ${QBITTORRENT_USERNAME:-}
+      QBITTORRENT_PASSWORD: ${QBITTORRENT_PASSWORD:-}
+      QBITTORRENT_CATEGORY: ${QBITTORRENT_CATEGORY:-audio-bluray}
+      QBITTORRENT_CONTENT_ROOT: ${QBITTORRENT_CONTENT_ROOT:-}
       TITLE: Atmos Track Splitter
     volumes:
       - ./config:/config
       - ${RIPS_PATH:?Set RIPS_PATH in .env}:/rips:ro
+      - ${STAGING_PATH:?Set STAGING_PATH in .env}:/staging:rw
       - ${MUSIC_VIDEOS_PATH:?Set MUSIC_VIDEOS_PATH in .env}:/music-videos:rw
     ports:
       - "3001:3001"
