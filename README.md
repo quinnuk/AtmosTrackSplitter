@@ -139,7 +139,7 @@ Then run:
 docker compose up -d --build
 ```
 
-Open http://SERVER-IP:3000 in a browser. App settings and jobs persist in
+Open https://SERVER-IP:3001 in a browser. The first visit may show a certificate warning because Webtop uses its own certificate. App settings and jobs persist in
 ./config. The Music Videos mount must be read/write; the Blu-ray rip mount is
 read-only.
 
