@@ -21,6 +21,7 @@ class CompletedDownload:
     name: str
     torrent_hash: str
     source_path: Path
+    download_root: Path
     state: str
     size_bytes: int
 
@@ -193,6 +194,7 @@ def list_completed_disc_downloads(
                 name=str(torrent.get("name") or source.name),
                 torrent_hash=str(torrent.get("hash") or ""),
                 source_path=source,
+                download_root=local_path if local_path.is_dir() else local_path.parent,
                 state=str(torrent.get("state") or "completed"),
                 size_bytes=int(torrent.get("size") or 0),
             ))
