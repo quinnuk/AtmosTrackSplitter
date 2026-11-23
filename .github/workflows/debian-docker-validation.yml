@@ -24,28 +24,25 @@ jobs:
           python -m pip install -r requirements-docker.txt
       - name: Compile Python files
         run: python -m compileall -q main.py extractor.py settings.py poster_art.py
-      - name: Test generated Plex artwork dimensions
+      - name: Test generated Plex album artwork
         run: |
           python - <<'PY'
-          from io import BytesIO
           from pathlib import Path
           from tempfile import TemporaryDirectory
           from PIL import Image
           import poster_art
 
-          source = BytesIO()
-          Image.new("RGB", (1200, 1200), (35, 70, 110)).save(source, format="JPEG")
           with TemporaryDirectory() as temp:
               root = Path(temp)
-              poster = poster_art.create_plex_poster(
-                  source.getvalue(), root / "poster.jpg", "Test Artist", "Test Album", "2024"
+              source = root / "rip"
+              output = root / "music-videos"
+              source.mkdir()
+              Image.new("RGB", (1200, 1200), (35, 70, 110)).save(source / "cover.jpg")
+              result = poster_art.create_album_poster(
+                  source, output, "Test Artist", "Test Album", "2024"
               )
-              cover = poster_art.create_square_cover(
-                  source.getvalue(), root / "cover.jpg"
-              )
-              with Image.open(poster) as image:
-                  assert image.size == (1000, 1500), image.size
-              with Image.open(cover) as image:
+              assert result is not None and result.name == "folder.jpg", result
+              with Image.open(result) as image:
                   assert image.size == (1000, 1000), image.size
           PY
 
