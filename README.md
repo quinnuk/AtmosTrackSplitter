@@ -137,8 +137,10 @@ removed after a successful split.
 
 ### Dell Docker setup
 
-Copy `.env.example` to `.env`, set a strong browser password, and check all
-host paths and qBittorrent connection details:
+Copy `.env.example` to `.env` and check the host paths and qBittorrent
+connection details. The supplied example disables the browser login and binds
+the web interface only to the Dell's LAN address (`WEB_BIND_IP=192.168.0.89`).
+Change that value if the Dell's LAN address changes.
 
 - `RIPS_DIR=/mnt/disks/MEDIA6TB/torrents/audio-bluray` — direct host
   path to the dedicated category on MEDIA6TB, mounted read-only. In the
@@ -158,7 +160,15 @@ host paths and qBittorrent connection details:
 - `QBITTORRENT_CONTENT_ROOT` — absolute category path **as qBittorrent sees
   it inside its own container**. This is not the host path mounted at
   `RIPS_DIR`; set it to the matching internal path.
-- `AUTH_USERNAME` and `AUTH_PASSWORD` — required browser login.
+- `AUTH_DISABLED=true` — explicitly disables the browser login. This is
+  intended only for a trusted home LAN. Anyone on that LAN who can reach the
+  service can browse downloads, start/cancel jobs, change Discogs settings
+  and write into the Plex Music Videos destination.
+- `WEB_BIND_IP=192.168.0.89` — binds the published Docker port to the Dell's
+  LAN interface rather than all interfaces. Do not change this to
+  `0.0.0.0` for an unauthenticated deployment.
+- `QBITTORRENT_USERNAME` and `QBITTORRENT_PASSWORD` are still required for
+  the app to read the qBittorrent Web API. They are unrelated to browser login.
 - `PUID` and `PGID` — set these to the account that owns the destination
   directories (check with `id -u && id -g`).
 
@@ -169,11 +179,12 @@ mkdir -p config
 docker compose up -d --build
 ```
 
-Open `http://DELL-SERVER-IP:8765` and sign in with the configured login.
-The app also offers a health endpoint at `/healthz`. Basic authentication
-does not encrypt HTTP traffic: keep access on your trusted home network and
-do not port-forward this service to the public internet. For remote access,
-use a private encrypted route such as Tailscale.
+Open `http://192.168.0.89:8765` from a device on the home LAN. With
+`AUTH_DISABLED=true`, no browser sign-in is requested. The app also offers
+a health endpoint at `/healthz`. Do not port-forward this unauthenticated
+service to the public internet or expose it over a wider network. For
+remote access, use a separately secured method and enable browser
+authentication first.
 
 The container uses one Gunicorn worker because job state is held in memory.
 The rip mount is read-only; only output, configuration and staging mounts are
