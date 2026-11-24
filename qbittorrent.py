@@ -24,7 +24,7 @@ class CompletedDownload:
         return "ISO image" if self.source_path.suffix.lower() == ".iso" else "Blu-ray folder"
 
 
-def _request(opener, base_url: str, endpoint: str, data: dict[str, str] | None = None) -> bytes:
+def _request(opener, base_url: str, endpoint: str, data: dict[str, str] | None = None) -> tuple[bytes, int]:
     url = urljoin(base_url.rstrip("/") + "/", endpoint.lstrip("/"))
     payload = urlencode(data).encode("utf-8") if data is not None else None
     req = Request(url, data=payload, headers={
@@ -34,6 +34,7 @@ def _request(opener, base_url: str, endpoint: str, data: dict[str, str] | None =
     try:
         with opener.open(req, timeout=20) as response:
             body = response.read(10 * 1024 * 1024 + 1)
+            status = response.status
     except HTTPError as exc:
         detail = exc.read(1000).decode("utf-8", errors="replace")
         if exc.code in (401, 403):
@@ -49,7 +50,7 @@ def _request(opener, base_url: str, endpoint: str, data: dict[str, str] | None =
         ) from exc
     if len(body) > 10 * 1024 * 1024:
         raise RuntimeError("qBittorrent returned an unexpectedly large response.")
-    return body
+    return body, status
 
 
 def _map_content_path(remote_path: str, content_root: str, local_root: Path) -> Path:
@@ -128,11 +129,16 @@ def list_completed_disc_downloads(
         )
 
     opener = build_opener(HTTPCookieProcessor(http.cookiejar.CookieJar()))
-    login = _request(
+    login_body, login_status = _request(
         opener, base_url, "/api/v2/auth/login",
         {"username": username, "password": password},
-    ).decode("utf-8", errors="replace").strip()
-    if login.lower() != "ok.":
+    )
+    login = login_body.decode("utf-8", errors="replace").strip()
+    # qBittorrent Web API 2.15 (qBittorrent 5.2+) returns HTTP 204
+    # with an empty body on successful login. Older versions return HTTP 200
+    # with "Ok.". _request raises HTTPError for non-success statuses,
+    # including HTTP 401 for invalid credentials.
+    if not (login_status == 204 or (login_status == 200 and login.lower() == "ok.")):
         raise RuntimeError("qBittorrent login failed. Check the Web UI username and password.")
 
     query = urlencode({
@@ -141,7 +147,7 @@ def list_completed_disc_downloads(
         "sort": "completion_on",
         "reverse": "true",
     })
-    payload = _request(opener, base_url, f"/api/v2/torrents/info?{query}")
+    payload, _ = _request(opener, base_url, f"/api/v2/torrents/info?{query}")
     try:
         torrents = json.loads(payload)
     except json.JSONDecodeError as exc:
