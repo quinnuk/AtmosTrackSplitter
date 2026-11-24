@@ -74,6 +74,14 @@ def test_browser_index_is_served_after_login():
     assert b"Suggested titles are not applied automatically" in response.data
 
 
+
+def test_browser_templates_use_javascript_interpolation():
+    html = (Path(webapp.app.static_folder) / "index.html").read_text(encoding="utf-8")
+    assert r"\${" not in html
+    assert "${esc(e.name)}" in html
+    assert "${esc(d.name)}" in html
+
+
 def test_unattended_auto_endpoint_is_not_exposed():
     response = client.post("/api/auto", json={"path": str(RIPS)}, headers=_HEADERS)
     assert response.status_code == 404
