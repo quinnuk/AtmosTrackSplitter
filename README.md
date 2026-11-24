@@ -102,6 +102,61 @@ python main.py
 
 > **Note:** if you launch it from PowerShell/cmd, the app is a child process of that terminal — closing the terminal window kills the app too, even mid-extraction. Run it with `pythonw main.py` (fully detached, no console) instead, or build the standalone `.exe` below.
 
+## Debian Docker edition (browser UI)
+
+The optional Flask edition runs the existing Atmos Track Splitter extraction
+engine in a lightweight Debian 13 container and provides a browser interface.
+It does not replace or alter the Windows desktop application.
+
+### Current behaviour
+
+- Browse the read-only rip directory and select a folder containing
+  `BDMV/PLAYLIST/*.mpls`.
+- Scan and score the disc's Atmos playlists.
+- Automatically suggest chapter titles from embedded names, local sidecars,
+  MusicBrainz and (when configured) Discogs.
+- Align timed tracklists against chapter durations, so a spoken introduction,
+  applause or an extra encore need not shift all subsequent names.
+- Review and edit the suggested titles before explicitly starting a split.
+  Unattended splitting is deliberately disabled while the title resolver is
+  being validated against real discs.
+- Use the existing MKVToolNix/FFmpeg stream-copy pipeline, including its
+  cancellation and resumable-job support.
+
+The browser edition currently accepts ripped BDMV folders. qBittorrent
+completed-download discovery, ISO input and Plex folder artwork are planned
+follow-on additions; they are not yet part of this initial Flask import.
+
+### Dell Docker setup
+
+Copy `.env.example` to `.env`, set the web login, and check that the paths
+match the host:
+
+- `RIPS_DIR=/data/torrents/audio-bluray` — source rips, mounted read-only.
+- `OUTPUT_DIR=/data/media/music-videos` — Plex Music Videos destination.
+- `STAGING_DIR=/data/torrents/audio-bluray-staging` — reserved writable
+  workspace for the planned ISO support.
+- `AUTH_USERNAME` and `AUTH_PASSWORD` — required browser login.
+- `PUID` and `PGID` — set these to the account that owns the destination
+  directories (check with `id -u && id -g`).
+
+Then build and start:
+
+```bash
+mkdir -p config
+docker compose up -d --build
+```
+
+Open `http://DELL-SERVER-IP:8765` and sign in with the configured login.
+The app also offers a health endpoint at `/healthz`. The browser login uses
+HTTP Basic authentication; do not port-forward this service or expose it to
+the public internet. For remote access, use a private encrypted route such
+as Tailscale or put it behind a properly configured HTTPS reverse proxy.
+
+The container uses one Gunicorn worker because job state is held in memory.
+The rip mount is read-only; only the output, configuration and staging mounts
+are writable.
+
 ## Building a standalone .exe
 
 ```bash
