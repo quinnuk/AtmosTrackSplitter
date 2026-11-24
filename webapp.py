@@ -199,16 +199,34 @@ def api_select_download():
         album_hint = str(data.get("name") or (source.stem if source.is_file() else source.name)).strip()
 
         if source.is_file() and source.suffix.lower() == ".iso":
-            disc = iso_support.prepare_iso(source, STAGING_ROOT)
-        else:
-            disc = iso_support.find_disc_folder(source)
-            if disc is None:
-                raise ValueError("No BDMV/PLAYLIST folder found in this completed download.")
+            job = _new_job("iso-prepare")
+
+            def prepare() -> None:
+                _jlog(job, f"Preparing ISO image {source.name} with 7-Zip...")
+                _jlog(job, "The original download is read-only; extracting BDMV to staging.")
+                disc = iso_support.prepare_iso(source, STAGING_ROOT)
+                # A category-wide parent can contain other albums. Never use
+                # it as a source for an unrelated local cover image/tracklist.
+                sidecar_root = root if root != RIPS_ROOT else disc
+                job["prepared_download"] = {
+                    "path": str(disc),
+                    "sidecar_path": str(sidecar_root),
+                    "album_name_hint": album_hint,
+                    "is_iso": True,
+                }
+                _jlog(job, "ISO preparation complete. Ready to scan the disc.")
+
+            _thread(job, prepare)
+            return jsonify(preparing=True, job_id=job["id"])
+
+        disc = iso_support.find_disc_folder(source)
+        if disc is None:
+            raise ValueError("No BDMV/PLAYLIST folder found in this completed download.")
         return jsonify(
             path=str(disc),
             sidecar_path=str(root),
             album_name_hint=album_hint,
-            is_iso=source.suffix.lower() == ".iso",
+            is_iso=False,
         )
     except (ValueError, RuntimeError, OSError) as exc:
         return _err(str(exc))
@@ -370,6 +388,7 @@ def _new_job(kind: str) -> dict:
         "log": [],
         "error": "",
         "outputs": [],
+        "prepared_download": None,
         "started": time.time(),
     }
     with _jobs_lock:
