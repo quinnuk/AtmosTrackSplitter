@@ -114,3 +114,32 @@ def test_completed_download_selection_cannot_escape_rips():
         },
     )
     assert response.status_code == 400
+
+def test_iso_selection_returns_background_preparation_job():
+    iso_file = RIPS / "Test Album.iso"
+    iso_file.write_bytes(b"fake ISO bytes")
+    prepared = STAGING / "Test Album-staged"
+    prepared.mkdir()
+    def run_inline(job, fn):
+        fn()
+        if job["status"] == "running":
+            job["status"] = "done"
+
+    with patch.object(webapp.iso_support, "prepare_iso", return_value=prepared), \
+         patch.object(webapp, "_thread", side_effect=run_inline):
+        response = client.post(
+            "/api/select-download",
+            headers=_HEADERS,
+            json={
+                "path": str(iso_file),
+                "download_root": str(RIPS),
+                "name": "Test Artist - Test Album.iso",
+            },
+        )
+    assert response.status_code == 200
+    result = response.get_json()
+    assert result["preparing"] is True
+    job = client.get("/api/jobs/" + result["job_id"], headers=_HEADERS).get_json()
+    assert job["status"] == "done"
+    assert job["prepared_download"]["path"] == str(prepared)
+    assert job["prepared_download"]["album_name_hint"] == "Test Artist - Test Album.iso"
