@@ -4,6 +4,8 @@ import base64
 import os
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 _TMP = Path(tempfile.mkdtemp(prefix="atmos-web-tests-"))
 RIPS = _TMP / "rips"
@@ -69,3 +71,46 @@ def test_browser_index_is_served_after_login():
 def test_unattended_auto_endpoint_is_not_exposed():
     response = client.post("/api/auto", json={"path": str(RIPS)}, headers=_HEADERS)
     assert response.status_code == 404
+
+def test_completed_download_list_is_read_only_and_displayed():
+    item = SimpleNamespace(
+        name="Test Artist - Test Album",
+        kind="Blu-ray folder",
+        source_path=RIPS / "Band" / "Live (2020)",
+        download_root=RIPS / "Band" / "Live (2020)",
+        torrent_hash="a" * 40,
+        size_bytes=123456,
+    )
+    with patch.object(webapp.qbittorrent, "list_completed_disc_downloads", return_value=[item]):
+        response = client.get("/api/completed-downloads", headers=_HEADERS)
+    assert response.status_code == 200
+    assert response.get_json()["downloads"][0]["name"] == item.name
+
+
+def test_completed_bdmv_folder_can_be_selected():
+    response = client.post(
+        "/api/select-download",
+        headers=_HEADERS,
+        json={
+            "path": str(RIPS / "Band" / "Live (2020)"),
+            "download_root": str(RIPS / "Band" / "Live (2020)"),
+            "name": "Band - Live (2020)",
+        },
+    )
+    assert response.status_code == 200
+    result = response.get_json()
+    assert result["path"] == str(RIPS / "Band" / "Live (2020)")
+    assert result["album_name_hint"] == "Band - Live (2020)"
+
+
+def test_completed_download_selection_cannot_escape_rips():
+    response = client.post(
+        "/api/select-download",
+        headers=_HEADERS,
+        json={
+            "path": "/etc/passwd.iso",
+            "download_root": str(RIPS),
+            "name": "bad",
+        },
+    )
+    assert response.status_code == 400
