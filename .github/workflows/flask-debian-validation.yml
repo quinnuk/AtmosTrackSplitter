@@ -23,7 +23,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements-docker.txt pytest
       - name: Compile application
-        run: python -m compileall -q extractor.py settings.py split_now.py auto_titles.py webapp.py
+        run: python -m compileall -q extractor.py settings.py split_now.py auto_titles.py webapp.py qbittorrent.py iso_support.py poster_art.py
       - name: Run tests
         run: python -m pytest -q
 
