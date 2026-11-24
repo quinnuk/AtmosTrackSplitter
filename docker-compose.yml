@@ -7,7 +7,8 @@ services:
     init: true
     user: "${PUID:-1000}:${PGID:-1000}"
     ports:
-      - "${WEB_PORT:-8765}:8765"
+      # Bind to the LAN interface only; change WEB_BIND_IP if the Dell's LAN IP changes.
+      - "${WEB_BIND_IP:-127.0.0.1}:${WEB_PORT:-8765}:8765"
     environment:
       TZ: ${TZ:-Europe/London}
       PORT: "8765"
@@ -15,8 +16,9 @@ services:
       RIPS_DIR: /rips
       OUTPUT_DIR: /output
       STAGING_DIR: /staging
-      AUTH_USERNAME: ${AUTH_USERNAME:?Set AUTH_USERNAME in .env}
-      AUTH_PASSWORD: ${AUTH_PASSWORD:?Set AUTH_PASSWORD in .env}
+      AUTH_DISABLED: ${AUTH_DISABLED:-false}
+      AUTH_USERNAME: ${AUTH_USERNAME:-}
+      AUTH_PASSWORD: ${AUTH_PASSWORD:-}
       DISCOGS_TOKEN: ${DISCOGS_TOKEN:-}
       QBITTORRENT_URL: ${QBITTORRENT_URL:-}
       QBITTORRENT_USERNAME: ${QBITTORRENT_USERNAME:-}
