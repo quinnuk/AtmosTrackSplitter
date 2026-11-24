@@ -22,8 +22,7 @@ COPY requirements-docker.txt ./
 RUN pip install --no-cache-dir -r requirements-docker.txt
 
 # The extraction engine remains the existing Windows/Linux-compatible code.
-COPY extractor.py settings.py split_now.py ./
-COPY auto_titles.py webapp.py ./
+COPY extractor.py settings.py split_now.py auto_titles.py webapp.py qbittorrent.py iso_support.py poster_art.py ./
 COPY static ./static
 
 RUN mkdir -p /config /rips /output /staging \
