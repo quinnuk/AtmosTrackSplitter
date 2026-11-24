@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Atmos Track Splitter</title>
+<style>
+:root{--bg:#14161a;--panel:#1d2026;--line:#2c3139;--text:#e6e8eb;--dim:#8d96a3;--accent:#4c9aff;--ok:#3fb27f;--warn:#e0a030;--bad:#e05a5a}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.4 system-ui,sans-serif}
+header{padding:12px 20px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center}
+h1{font-size:16px;margin:0}main{display:grid;grid-template-columns:320px 1fr;gap:16px;padding:16px;max-width:1300px;margin:auto}
+@media(max-width:900px){main{grid-template-columns:1fr}}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px}
+.panel h2{font-size:13px;margin:0 0 8px;color:var(--dim);text-transform:uppercase;letter-spacing:.05em}
+button{background:var(--accent);color:#fff;border:0;border-radius:6px;padding:7px 12px;cursor:pointer;font:inherit}
+button.sec{background:#2d333c}button:disabled{opacity:.5;cursor:default}
+input,select{background:#0f1114;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:6px 8px;font:inherit}
+input.name{width:100%}.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0}
+.entry{padding:6px 8px;border-radius:6px;cursor:pointer;display:flex;justify-content:space-between;gap:8px}
+.entry:hover{background:#262b33}.badge{font-size:11px;padding:1px 6px;border-radius:10px;background:var(--ok);color:#06210f;white-space:nowrap}
+.crumb{color:var(--dim);font-size:12px;word-break:break-all;margin-bottom:6px}
+table{width:100%;border-collapse:collapse}td,th{padding:4px 6px;border-bottom:1px solid var(--line);text-align:left}
+th{color:var(--dim);font-weight:500;font-size:12px}td.n{width:34px;color:var(--dim)}td.t{width:70px;color:var(--dim);font-variant-numeric:tabular-nums}
+.chip{display:inline-block;padding:2px 8px;border-radius:10px;font-size:12px}
+.c-review{background:var(--warn);color:#2b1c00}.c-none{background:var(--bad);color:#2b0505}
+.dim{color:var(--dim)}.miss input{border-color:var(--warn)}
+#log{background:#0f1114;border:1px solid var(--line);border-radius:6px;padding:8px;height:200px;overflow:auto;white-space:pre-wrap;font:12px/1.4 ui-monospace,monospace}
+.err{color:var(--bad)}.hidden{display:none}
+.notice{padding:8px 10px;border:1px solid #66552f;background:#302716;border-radius:6px;color:#f0ca7c;margin:8px 0}
+</style></head><body>
+<header><h1>🎧 Atmos Track Splitter</h1>
+<div><span class="dim" id="tools"></span> <button class="sec" onclick="setToken()">Discogs token</button></div></header>
+<main>
+<section class="panel"><h2>Rips</h2>
+<div class="row"><button class="sec" onclick="completedDownloads()">Completed downloads...</button></div>
+<div id="downloads" class="hidden"></div>
+<div class="crumb" id="crumb"></div><div id="list"></div></section>
+<section>
+ <div class="panel hidden" id="disc">
+  <h2>Disc</h2>
+  <div id="discName" style="font-weight:600"></div>
+  <div class="row"><span class="dim">Playlist</span><select id="playlist" onchange="rescan(this.value)"></select><span class="dim" id="plInfo"></span></div>
+  <div class="row"><input id="artist" placeholder="Artist"><input id="album" placeholder="Album" style="flex:1;min-width:180px"><input id="year" placeholder="Year" style="width:70px">
+   <button onclick="lookup()">Find titles</button></div>
+  <div class="row"><span id="status"></span><select id="alts" class="hidden" onchange="useAlt(this.value)" style="max-width:100%"></select></div>
+  <div id="notes" class="dim"></div>
+ </div>
+ <div class="panel hidden" id="chap" style="margin-top:12px">
+  <h2>Tracks</h2>
+  <div class="notice">Suggested titles are not applied automatically. Check the edition and every track name before selecting Split now.</div>
+  <table><thead><tr><th>#</th><th>Start</th><th>Length</th><th>Title</th></tr></thead><tbody id="rows"></tbody></table>
+  <div class="row" style="margin-top:12px"><span class="dim">Output folder</span><input id="outname" style="flex:1;min-width:200px">
+   <label><input type="checkbox" id="overwrite"> Overwrite</label><label id="resumeWrap" class="hidden"><input type="checkbox" id="resume" checked> Resume previous</label></div>
+  <div class="row"><button id="startBtn" onclick="start()">Split now</button><button class="sec hidden" id="cancelBtn" onclick="cancelJob()">Cancel</button></div>
+ </div>
+ <div class="panel" style="margin-top:12px"><h2>Progress</h2><div id="log" class="dim">Nothing running.</div><div id="jobErr" class="err"></div></div>
+</section></main>
+<script>
+const $=id=>document.getElementById(id);let state={scan:null,resolve:null,selectedAlignment:null,job:null,timer:null};
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+async function api(url,body){const r=await fetch(url,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});let j={};try{j=await r.json()}catch(e){}if(!r.ok)throw new Error(j.error||('HTTP '+r.status));return j}
+async function init(){try{const c=await api('/api/config');const bad=Object.entries(c.tools).filter(([,v])=>!v).map(([k])=>k);$('tools').textContent=bad.length?'Missing tools: '+bad.join(', '):'Tools OK'+(c.has_discogs?' · Discogs on':'');}catch(e){$('tools').textContent='Login required or application unavailable';$('list').textContent=e.message;return}browse('')}
+async function browse(p){try{const d=await api('/api/browse?path='+encodeURIComponent(p||''));$('crumb').textContent=d.path;let h='';
+ if(d.parent)h+=`<div class="entry" data-p="\${esc(d.parent)}">⬆ ..</div>`;
+ for(const e of d.entries)h+=`<div class="entry" data-p="\${esc(e.path)}" data-d="\${e.is_disc?1:0}"><span>\${e.is_disc?'💿':'📁'} \${esc(e.name)}</span>\${e.is_disc?'<span class="badge">disc</span>':''}</div>`;
+ $('list').innerHTML=h||'<span class="dim">Empty</span>';
+ $('list').querySelectorAll('.entry').forEach(el=>el.onclick=()=>el.dataset.d==='1'?selectDisc(el.dataset.p):browse(el.dataset.p));
+ if(d.is_disc)selectDisc(d.path)}catch(e){$('list').innerHTML='<span class="err">'+esc(e.message)+'</span>'}}
+async function selectDisc(path,pl,meta={}){$('jobErr').textContent='';$('status').innerHTML='<span class="dim">Scanning…</span>';$('disc').classList.remove('hidden');
+ try{const s=await api('/api/scan',{path,playlist:pl,sidecar_path:meta.sidecar_path||path,album_name_hint:meta.album_name_hint||''});state.scan=s;renderScan();await lookup()}catch(e){$('status').innerHTML='<span class="err">'+esc(e.message)+'</span>'}}
+function rescan(pl){selectDisc(state.scan.path,pl)}
+function renderScan(){const s=state.scan;$('discName').textContent=s.default_output;$('chap').classList.remove('hidden');
+ $('playlist').innerHTML=s.playlists.map(p=>`<option value="\${p.file}" \${p.file===s.playlist?'selected':''}>\${p.file} — \${p.chapters} ch, \${p.minutes} min</option>`).join('');
+ $('plInfo').textContent=(s.playlists.find(p=>p.file===s.playlist)||{}).reasons?.slice(0,2).join(' · ')||'';
+ $('artist').value=s.guess.artist||'';$('album').value=s.guess.album||'';$('year').value=s.guess.year||'';$('outname').value=s.default_output;
+ $('resumeWrap').classList.toggle('hidden',!s.resumable);
+ $('rows').innerHTML=s.chapters.map(c=>`<tr id="r\${c.index}"><td class="n">\${c.index}</td><td class="t">\${c.start}</td><td class="t">\${c.length}</td><td><input class="name" id="n\${c.index}" value="\${esc(c.embedded_name)}" placeholder="Track \${String(c.index).padStart(2,'0')}"></td></tr>`).join('')}
+async function lookup(){if(!state.scan)return;const s=state.scan;$('status').innerHTML='<span class="dim">Looking up titles…</span>';$('alts').classList.add('hidden');
+ try{const r=await api('/api/resolve',{path:s.path,playlist:s.playlist,sidecar_path:s.sidecar_path,artist:$('artist').value,album:$('album').value,year:$('year').value});state.resolve=r;renderResolve()}catch(e){$('status').innerHTML='<span class="err">'+esc(e.message)+'</span>'}}
+function renderResolve(){const r=state.resolve;state.selectedAlignment=r.best||null;const cls={review:'c-review',none:'c-none'}[r.status]||'c-review';
+ const txt={review:'Please review suggestions',none:'No match — type titles or edit the search'}[r.status]||'Please review suggestions';
+ $('status').innerHTML=`<span class="chip \${cls}">\${txt}\${r.best?' · '+Math.round(r.best.confidence*100)+'% score':''}</span>`;
+ const alts=$('alts');if(r.alternatives.length>1){alts.innerHTML=r.alternatives.map((a,i)=>`<option value="\${i}">\${Math.round(a.confidence*100)}% — \${esc(a.label)}</option>`).join('');alts.classList.remove('hidden')}
+ if(r.best)applyAlignment(r.best);else $('notes').textContent=r.messages.slice(-2).join(' · ')}
+function useAlt(i){state.selectedAlignment=state.resolve.alternatives[+i];applyAlignment(state.selectedAlignment)}
+function applyAlignment(a){$('notes').textContent=a.label+(a.notes.length?' — '+a.notes.join('; '):'');
+ for(const c of state.scan.chapters){const el=$('n'+c.index);const v=a.names[c.index];el.value=v||c.embedded_name||'';$('r'+c.index).classList.toggle('miss',!v)}}
+function names(){const o={};for(const c of state.scan.chapters){const v=$('n'+c.index).value.trim();if(v)o[c.index]=v}return o}
+async function start(){if(!state.scan)return;const r=state.selectedAlignment||state.resolve?.best||{};await run('/api/jobs',{path:state.scan.path,sidecar_path:state.scan.sidecar_path,album_name_hint:state.scan.album_name_hint,playlist:state.scan.playlist,names:names(),output_name:$('outname').value,overwrite:$('overwrite').checked,resume:$('resume').checked&&state.scan.resumable,artist:$('artist').value,album:$('album').value,year:$('year').value,release_id:r.release_id||''})}
+async function run(url,body){$('jobErr').textContent='';$('log').textContent='';try{const j=await api(url,body);state.job=j.job_id;$('cancelBtn').classList.remove('hidden');poll()}catch(e){$('jobErr').textContent=e.message}}
+function poll(){clearTimeout(state.timer);state.timer=setTimeout(async()=>{try{const j=await api('/api/jobs/'+state.job);const l=$('log');l.textContent=j.log.join('\\n');l.scrollTop=l.scrollHeight;
+ if(j.status==='running'){poll();return}$('cancelBtn').classList.add('hidden');
+ if(j.status==='done')l.textContent+='\\n✔ Done — '+j.outputs.length+' file(s) written.';
+ else $('jobErr').textContent=j.error||j.status}catch(e){$('jobErr').textContent=e.message}},1200)}
+async function cancelJob(){await api('/api/jobs/'+state.job+'/cancel',{})}
+async function completedDownloads(){
+ const box=$('downloads');box.classList.remove('hidden');box.innerHTML='<div class="dim">Checking qBittorrent…</div>';
+ try{
+  const result=await api('/api/completed-downloads');
+  if(!result.downloads.length){box.innerHTML='<div class="dim">No completed Blu-ray folders or ISO images found in the audio-bluray category.</div>';return}
+  box.innerHTML=result.downloads.map((d,i)=>`<div class="entry" data-download="${i}"><span>📀 ${esc(d.name)}<br><small class="dim">${esc(d.kind)} · ${(d.size_bytes/1073741824).toFixed(1)} GiB</small></span><span class="badge">Select</span></div>`).join('');
+  box.querySelectorAll('[data-download]').forEach(el=>el.onclick=()=>useDownload(result.downloads[+el.dataset.download]));
+ }catch(e){box.innerHTML='<div class="err">'+esc(e.message)+'</div>'}
+}
+async function useDownload(item){
+ const box=$('downloads');box.innerHTML='<div class="dim">Preparing selected download…</div>';
+ try{
+  const ready=await api('/api/select-download',{path:item.path,download_root:item.download_root,name:item.name});
+  if(ready.preparing){pollIsoPreparation(ready.job_id);return}
+  await finishPreparedDownload(ready);
+ }catch(e){box.innerHTML='<div class="err">'+esc(e.message)+'</div>'}
+}
+async function pollIsoPreparation(jobId){
+ const box=$('downloads');
+ try{
+  const job=await api('/api/jobs/'+jobId);
+  box.innerHTML='<div class="dim">'+(job.log||[]).slice(-3).map(esc).join('<br>')+'</div>';
+  if(job.status==='running'){setTimeout(()=>pollIsoPreparation(jobId),1600);return}
+  if(job.status==='done'&&job.prepared_download){await finishPreparedDownload(job.prepared_download);return}
+  box.innerHTML='<div class="err">'+esc(job.error||job.status||'ISO preparation failed')+'</div>';
+ }catch(e){box.innerHTML='<div class="err">'+esc(e.message)+'</div>'}
+}
+async function finishPreparedDownload(ready){
+ $('downloads').innerHTML='';
+ await selectDisc(ready.path,undefined,{sidecar_path:ready.sidecar_path,album_name_hint:ready.album_name_hint});
+}
+async function setToken(){const t=prompt('Discogs personal access token (leave blank to clear):');if(t===null)return;await api('/api/settings',{discogs_token:t});init()}
+init();
+</script></body></html>

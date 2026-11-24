@@ -102,6 +102,88 @@ python main.py
 
 > **Note:** if you launch it from PowerShell/cmd, the app is a child process of that terminal — closing the terminal window kills the app too, even mid-extraction. Run it with `pythonw main.py` (fully detached, no console) instead, or build the standalone `.exe` below.
 
+## Debian Docker edition (browser UI)
+
+The optional Flask edition runs the existing Atmos Track Splitter extraction
+engine in a lightweight Debian 13 container and provides a browser interface.
+It does not replace or alter the Windows desktop application.
+
+### Workflow
+
+- Browse the read-only rip directory or select completed downloads from the
+  configured qBittorrent category (normally `audio-bluray`).
+- Completed torrents are queried through the qBittorrent Web API. The app
+  reads torrent state and content paths only; it does not pause, rename, move,
+  delete or otherwise change torrents.
+- Ripped BDMV folders are scanned directly. Blu-ray ISO files are read with
+  Debian's 7-Zip command-line tool and their BDMV tree is copied to a separate
+  staging directory. No loop mounting or privileged-container mode is used.
+- Automatic title suggestions use embedded chapter names, local sidecars,
+  MusicBrainz and (when configured) Discogs. Timed tracklists are aligned
+  against chapter durations, allowing an intro, applause or an extra encore
+  without shifting every subsequent title.
+- Suggested titles are always presented for review. Unattended splitting is
+  disabled in this browser edition.
+- Extraction uses the existing MKVToolNix/FFmpeg stream-copy pipeline,
+  including cancellation and resumable-job support.
+- On successful splitting the app creates a square Plex-compatible
+  `folder.jpg` (1000 x 1000) from local cover art or the selected
+  MusicBrainz release's Cover Art Archive image. Existing artwork is not
+  overwritten.
+
+The original download folder is mounted read-only so qBittorrent can continue
+seeding. ISO staging is kept after an interrupted job to allow recovery and
+removed after a successful split.
+
+### Dell Docker setup
+
+Copy `.env.example` to `.env`, set a strong browser password, and check all
+host paths and qBittorrent connection details:
+
+- `RIPS_DIR=/mnt/disks/MEDIA6TB/torrents/audio-bluray` — direct host
+  path to the dedicated category on MEDIA6TB, mounted read-only. In the
+  qBittorrent container this same folder is `/data/torrents/audio-bluray`.
+- `OUTPUT_DIR=/data/media/music-videos` — existing Plex Music Videos
+  destination on the mergerfs pool.
+- `STAGING_DIR=/mnt/disks/MEDIA4TB/torrents/audio-bluray-staging` — writable
+  temporary workspace on the physical MEDIA4TB ext4 filesystem. This keeps
+  ISO free-space checks tied to the staging drive rather than mergerfs's
+  combined free-space figure. Allow free space roughly equal to the ISO size
+  plus 512 MiB.
+- `QBITTORRENT_URL` — qBittorrent Web UI address reachable from this
+  container, not `localhost` unless qBittorrent shares the container's
+  network namespace.
+- `QBITTORRENT_USERNAME` and `QBITTORRENT_PASSWORD` — the Web UI login.
+- `QBITTORRENT_CATEGORY=audio-bluray` — the category to query.
+- `QBITTORRENT_CONTENT_ROOT` — absolute category path **as qBittorrent sees
+  it inside its own container**. This is not the host path mounted at
+  `RIPS_DIR`; set it to the matching internal path.
+- `AUTH_USERNAME` and `AUTH_PASSWORD` — required browser login.
+- `PUID` and `PGID` — set these to the account that owns the destination
+  directories (check with `id -u && id -g`).
+
+Then build and start:
+
+```bash
+mkdir -p config
+docker compose up -d --build
+```
+
+Open `http://DELL-SERVER-IP:8765` and sign in with the configured login.
+The app also offers a health endpoint at `/healthz`. Basic authentication
+does not encrypt HTTP traffic: keep access on your trusted home network and
+do not port-forward this service to the public internet. For remote access,
+use a private encrypted route such as Tailscale.
+
+The container uses one Gunicorn worker because job state is held in memory.
+The rip mount is read-only; only output, configuration and staging mounts are
+writable.
+
+**Validation note:** unit tests cover qBittorrent API handling, path mapping,
+BDMV discovery, simulated ISO staging, title matching and the browser routes.
+The Docker image is built in CI. A real Blu-ray ISO and a real qBittorrent
+container still need end-to-end testing on the Dell before production use.
+
 ## Building a standalone .exe
 
 ```bash

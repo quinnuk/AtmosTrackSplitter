@@ -1,0 +1,40 @@
+name: Flask Debian Docker validation
+
+on:
+  push:
+    branches:
+      - feature/flask-docker-debian
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  python-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-docker.txt pytest
+      - name: Compile application
+        run: python -m compileall -q extractor.py settings.py split_now.py auto_titles.py webapp.py qbittorrent.py iso_support.py poster_art.py
+      - name: Run tests
+        run: python -m pytest -q
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Build Debian Docker image
+        run: docker build --tag atmos-track-splitter:flask-test .
+      - name: Verify the built image can import every runtime module
+        run: >-
+          docker run --rm atmos-track-splitter:flask-test
+          python -c "import auto_titles, extractor, iso_support, poster_art, qbittorrent, webapp; print('Runtime imports OK')"

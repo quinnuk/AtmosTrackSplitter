@@ -1,0 +1,31 @@
+services:
+  atmos-track-splitter:
+    build: .
+    image: quinnuk/atmos-track-splitter:flask
+    container_name: atmos-track-splitter
+    restart: unless-stopped
+    init: true
+    user: "${PUID:-1000}:${PGID:-1000}"
+    ports:
+      - "${WEB_PORT:-8765}:8765"
+    environment:
+      TZ: ${TZ:-Europe/London}
+      PORT: "8765"
+      HOME: /config
+      RIPS_DIR: /rips
+      OUTPUT_DIR: /output
+      STAGING_DIR: /staging
+      AUTH_USERNAME: ${AUTH_USERNAME:?Set AUTH_USERNAME in .env}
+      AUTH_PASSWORD: ${AUTH_PASSWORD:?Set AUTH_PASSWORD in .env}
+      DISCOGS_TOKEN: ${DISCOGS_TOKEN:-}
+      QBITTORRENT_URL: ${QBITTORRENT_URL:-}
+      QBITTORRENT_USERNAME: ${QBITTORRENT_USERNAME:-}
+      QBITTORRENT_PASSWORD: ${QBITTORRENT_PASSWORD:-}
+      QBITTORRENT_CATEGORY: ${QBITTORRENT_CATEGORY:-audio-bluray}
+      QBITTORRENT_CONTENT_ROOT: ${QBITTORRENT_CONTENT_ROOT:-}
+    volumes:
+      - ./config:/config
+      - ${RIPS_DIR:?Set RIPS_DIR in .env}:/rips:ro
+      - ${OUTPUT_DIR:?Set OUTPUT_DIR in .env}:/output:rw
+      - ${STAGING_DIR:?Set STAGING_DIR in .env}:/staging:rw
+    shm_size: "256mb"
