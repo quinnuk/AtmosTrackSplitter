@@ -104,9 +104,23 @@ async function useDownload(item){
  const box=$('downloads');box.innerHTML='<div class="dim">Preparing selected download…</div>';
  try{
   const ready=await api('/api/select-download',{path:item.path,download_root:item.download_root,name:item.name});
-  box.innerHTML='';
-  await selectDisc(ready.path,undefined,{sidecar_path:ready.sidecar_path,album_name_hint:ready.album_name_hint});
+  if(ready.preparing){pollIsoPreparation(ready.job_id);return}
+  await finishPreparedDownload(ready);
  }catch(e){box.innerHTML='<div class="err">'+esc(e.message)+'</div>'}
+}
+async function pollIsoPreparation(jobId){
+ const box=$('downloads');
+ try{
+  const job=await api('/api/jobs/'+jobId);
+  box.innerHTML='<div class="dim">'+(job.log||[]).slice(-3).map(esc).join('<br>')+'</div>';
+  if(job.status==='running'){setTimeout(()=>pollIsoPreparation(jobId),1600);return}
+  if(job.status==='done'&&job.prepared_download){await finishPreparedDownload(job.prepared_download);return}
+  box.innerHTML='<div class="err">'+esc(job.error||job.status||'ISO preparation failed')+'</div>';
+ }catch(e){box.innerHTML='<div class="err">'+esc(e.message)+'</div>'}
+}
+async function finishPreparedDownload(ready){
+ $('downloads').innerHTML='';
+ await selectDisc(ready.path,undefined,{sidecar_path:ready.sidecar_path,album_name_hint:ready.album_name_hint});
 }
 async function setToken(){const t=prompt('Discogs personal access token (leave blank to clear):');if(t===null)return;await api('/api/settings',{discogs_token:t});init()}
 init();
