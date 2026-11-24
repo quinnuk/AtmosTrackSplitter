@@ -132,7 +132,11 @@ def list_completed_disc_downloads(
         opener, base_url, "/api/v2/auth/login",
         {"username": username, "password": password},
     ).decode("utf-8", errors="replace").strip()
-    if login.lower() != "ok.":
+    # qBittorrent Web API 2.15 (qBittorrent 5.2+) returns HTTP 204
+    # with an empty body on successful login. Older versions return "Ok.".
+    # _request raises HTTPError for non-success HTTP statuses, including the
+    # 401 used by current qBittorrent versions for invalid credentials.
+    if login and login.lower() != "ok.":
         raise RuntimeError("qBittorrent login failed. Check the Web UI username and password.")
 
     query = urlencode({
