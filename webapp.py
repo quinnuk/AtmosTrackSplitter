@@ -70,6 +70,8 @@ def _sidecar_folder(raw: str | None, fallback: Path) -> Path:
 
 def _album_label(path: Path, hint: str = "") -> str:
     label = Path(hint).name if hint.strip() else path.name
+    if Path(label).suffix.lower() == ".iso":
+        label = Path(label).stem
     return extractor.derive_album_folder_name(Path(label))
 
 
@@ -285,8 +287,7 @@ def _scan(
     durations = auto_titles.chapter_durations(chapters, pl.duration_seconds)
     album = _album_label(path, album_name_hint)
     out_dir = _output_dir(album)
-    naming_source = Path(album_name_hint) if album_name_hint else path
-    guess = extractor.guess_artist_album_year(naming_source)
+    guess = extractor.guess_artist_album_year(Path(album))
     local_root = sidecar_path or path
     manifest = extractor.read_manifest(out_dir / "_work")
     return {
@@ -338,7 +339,7 @@ def _resolve(
         chapters,
         total_seconds=playlist.duration_seconds,
         discogs_token=_discogs_token(),
-        parent_artist=_parent_artist(path),
+        parent_artist=_parent_artist(sidecar_folder or path),
         override=override,
         offline=offline,
         log=log,
