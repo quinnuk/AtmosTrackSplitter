@@ -140,12 +140,15 @@ removed after a successful split.
 Copy `.env.example` to `.env`, set a strong browser password, and check all
 host paths and qBittorrent connection details:
 
-- `RIPS_DIR=/data/torrents/audio-bluray` — host folder for the dedicated
-  category, mounted read-only.
+- `RIPS_DIR=/mnt/disks/MEDIA6TB/torrents/audio-bluray` — direct host
+  path to the dedicated category on MEDIA6TB, mounted read-only. In the
+  qBittorrent container this same folder is `/data/torrents/audio-bluray`.
 - `OUTPUT_DIR=/data/media/music-videos` — existing Plex Music Videos
-  destination.
-- `STAGING_DIR=/data/torrents/audio-bluray-staging` — writable temporary
-  space for ISO preparation. Allow free space roughly equal to the ISO size
+  destination on the mergerfs pool.
+- `STAGING_DIR=/mnt/disks/MEDIA4TB/torrents/audio-bluray-staging` — writable
+  temporary workspace on the physical MEDIA4TB ext4 filesystem. This keeps
+  ISO free-space checks tied to the staging drive rather than mergerfs's
+  combined free-space figure. Allow free space roughly equal to the ISO size
   plus 512 MiB.
 - `QBITTORRENT_URL` — qBittorrent Web UI address reachable from this
   container, not `localhost` unless qBittorrent shares the container's
