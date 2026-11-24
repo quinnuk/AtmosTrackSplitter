@@ -226,7 +226,7 @@ def api_select_download():
             raise ValueError("No BDMV/PLAYLIST folder found in this completed download.")
         return jsonify(
             path=str(disc),
-            sidecar_path=str(root),
+            sidecar_path=str(root if root != RIPS_ROOT else disc),
             album_name_hint=album_hint,
             is_iso=False,
         )
