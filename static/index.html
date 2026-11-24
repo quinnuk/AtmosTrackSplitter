@@ -29,7 +29,10 @@ th{color:var(--dim);font-weight:500;font-size:12px}td.n{width:34px;color:var(--d
 <header><h1>🎧 Atmos Track Splitter</h1>
 <div><span class="dim" id="tools"></span> <button class="sec" onclick="setToken()">Discogs token</button></div></header>
 <main>
-<section class="panel"><h2>Rips</h2><div class="crumb" id="crumb"></div><div id="list"></div></section>
+<section class="panel"><h2>Rips</h2>
+<div class="row"><button class="sec" onclick="completedDownloads()">Completed downloads...</button></div>
+<div id="downloads" class="hidden"></div>
+<div class="crumb" id="crumb"></div><div id="list"></div></section>
 <section>
  <div class="panel hidden" id="disc">
   <h2>Disc</h2>
@@ -61,8 +64,8 @@ async function browse(p){try{const d=await api('/api/browse?path='+encodeURIComp
  $('list').innerHTML=h||'<span class="dim">Empty</span>';
  $('list').querySelectorAll('.entry').forEach(el=>el.onclick=()=>el.dataset.d==='1'?selectDisc(el.dataset.p):browse(el.dataset.p));
  if(d.is_disc)selectDisc(d.path)}catch(e){$('list').innerHTML='<span class="err">'+esc(e.message)+'</span>'}}
-async function selectDisc(path,pl){$('jobErr').textContent='';$('status').innerHTML='<span class="dim">Scanning…</span>';$('disc').classList.remove('hidden');
- try{const s=await api('/api/scan',{path,playlist:pl});state.scan=s;renderScan();await lookup()}catch(e){$('status').innerHTML='<span class="err">'+esc(e.message)+'</span>'}}
+async function selectDisc(path,pl,meta={}){$('jobErr').textContent='';$('status').innerHTML='<span class="dim">Scanning…</span>';$('disc').classList.remove('hidden');
+ try{const s=await api('/api/scan',{path,playlist:pl,sidecar_path:meta.sidecar_path||path,album_name_hint:meta.album_name_hint||''});state.scan=s;renderScan();await lookup()}catch(e){$('status').innerHTML='<span class="err">'+esc(e.message)+'</span>'}}
 function rescan(pl){selectDisc(state.scan.path,pl)}
 function renderScan(){const s=state.scan;$('discName').textContent=s.default_output;$('chap').classList.remove('hidden');
  $('playlist').innerHTML=s.playlists.map(p=>`<option value="\${p.file}" \${p.file===s.playlist?'selected':''}>\${p.file} — \${p.chapters} ch, \${p.minutes} min</option>`).join('');
@@ -71,7 +74,7 @@ function renderScan(){const s=state.scan;$('discName').textContent=s.default_out
  $('resumeWrap').classList.toggle('hidden',!s.resumable);
  $('rows').innerHTML=s.chapters.map(c=>`<tr id="r\${c.index}"><td class="n">\${c.index}</td><td class="t">\${c.start}</td><td class="t">\${c.length}</td><td><input class="name" id="n\${c.index}" value="\${esc(c.embedded_name)}" placeholder="Track \${String(c.index).padStart(2,'0')}"></td></tr>`).join('')}
 async function lookup(){if(!state.scan)return;const s=state.scan;$('status').innerHTML='<span class="dim">Looking up titles…</span>';$('alts').classList.add('hidden');
- try{const r=await api('/api/resolve',{path:s.path,playlist:s.playlist,artist:$('artist').value,album:$('album').value,year:$('year').value});state.resolve=r;renderResolve()}catch(e){$('status').innerHTML='<span class="err">'+esc(e.message)+'</span>'}}
+ try{const r=await api('/api/resolve',{path:s.path,playlist:s.playlist,sidecar_path:s.sidecar_path,artist:$('artist').value,album:$('album').value,year:$('year').value});state.resolve=r;renderResolve()}catch(e){$('status').innerHTML='<span class="err">'+esc(e.message)+'</span>'}}
 function renderResolve(){const r=state.resolve;const cls={review:'c-review',none:'c-none'}[r.status]||'c-review';
  const txt={review:'Please review suggestions',none:'No match — type titles or edit the search'}[r.status]||'Please review suggestions';
  $('status').innerHTML=`<span class="chip \${cls}">\${txt}\${r.best?' · '+Math.round(r.best.confidence*100)+'% score':''}</span>`;
@@ -81,13 +84,30 @@ function useAlt(i){applyAlignment(state.resolve.alternatives[+i])}
 function applyAlignment(a){$('notes').textContent=a.label+(a.notes.length?' — '+a.notes.join('; '):'');
  for(const c of state.scan.chapters){const el=$('n'+c.index);const v=a.names[c.index];el.value=v||c.embedded_name||'';$('r'+c.index).classList.toggle('miss',!v)}}
 function names(){const o={};for(const c of state.scan.chapters){const v=$('n'+c.index).value.trim();if(v)o[c.index]=v}return o}
-async function start(){if(!state.scan)return;await run('/api/jobs',{path:state.scan.path,playlist:state.scan.playlist,names:names(),output_name:$('outname').value,overwrite:$('overwrite').checked,resume:$('resume').checked&&state.scan.resumable})}
+async function start(){if(!state.scan)return;const r=state.resolve?.best||{};await run('/api/jobs',{path:state.scan.path,sidecar_path:state.scan.sidecar_path,album_name_hint:state.scan.album_name_hint,playlist:state.scan.playlist,names:names(),output_name:$('outname').value,overwrite:$('overwrite').checked,resume:$('resume').checked&&state.scan.resumable,artist:$('artist').value,album:$('album').value,year:$('year').value,release_id:r.release_id||''})}
 async function run(url,body){$('jobErr').textContent='';$('log').textContent='';try{const j=await api(url,body);state.job=j.job_id;$('cancelBtn').classList.remove('hidden');poll()}catch(e){$('jobErr').textContent=e.message}}
 function poll(){clearTimeout(state.timer);state.timer=setTimeout(async()=>{try{const j=await api('/api/jobs/'+state.job);const l=$('log');l.textContent=j.log.join('\\n');l.scrollTop=l.scrollHeight;
  if(j.status==='running'){poll();return}$('cancelBtn').classList.add('hidden');
  if(j.status==='done')l.textContent+='\\n✔ Done — '+j.outputs.length+' file(s) written.';
  else $('jobErr').textContent=j.error||j.status}catch(e){$('jobErr').textContent=e.message}},1200)}
 async function cancelJob(){await api('/api/jobs/'+state.job+'/cancel',{})}
+async function completedDownloads(){
+ const box=$('downloads');box.classList.remove('hidden');box.innerHTML='<div class="dim">Checking qBittorrent…</div>';
+ try{
+  const result=await api('/api/completed-downloads');
+  if(!result.downloads.length){box.innerHTML='<div class="dim">No completed Blu-ray folders or ISO images found in the audio-bluray category.</div>';return}
+  box.innerHTML=result.downloads.map((d,i)=>`<div class="entry" data-download="${i}"><span>📀 ${esc(d.name)}<br><small class="dim">${esc(d.kind)} · ${(d.size_bytes/1073741824).toFixed(1)} GiB</small></span><span class="badge">Select</span></div>`).join('');
+  box.querySelectorAll('[data-download]').forEach(el=>el.onclick=()=>useDownload(result.downloads[+el.dataset.download]));
+ }catch(e){box.innerHTML='<div class="err">'+esc(e.message)+'</div>'}
+}
+async function useDownload(item){
+ const box=$('downloads');box.innerHTML='<div class="dim">Preparing selected download…</div>';
+ try{
+  const ready=await api('/api/select-download',{path:item.path,download_root:item.download_root,name:item.name});
+  box.innerHTML='';
+  await selectDisc(ready.path,undefined,{sidecar_path:ready.sidecar_path,album_name_hint:ready.album_name_hint});
+ }catch(e){box.innerHTML='<div class="err">'+esc(e.message)+'</div>'}
+}
 async function setToken(){const t=prompt('Discogs personal access token (leave blank to clear):');if(t===null)return;await api('/api/settings',{discogs_token:t});init()}
 init();
 </script></body></html>
