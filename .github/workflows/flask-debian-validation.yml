@@ -34,3 +34,7 @@ jobs:
         uses: actions/checkout@v4
       - name: Build Debian Docker image
         run: docker build --tag atmos-track-splitter:flask-test .
+      - name: Verify the built image can import every runtime module
+        run: >-
+          docker run --rm atmos-track-splitter:flask-test
+          python -c "import auto_titles, extractor, iso_support, poster_art, qbittorrent, webapp; print('Runtime imports OK')"
