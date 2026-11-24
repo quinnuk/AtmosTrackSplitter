@@ -25,7 +25,7 @@ jobs:
       - name: Compile application
         run: python -m compileall -q extractor.py settings.py split_now.py auto_titles.py webapp.py
       - name: Run tests
-        run: pytest -q
+        run: python -m pytest -q
 
   docker-build:
     runs-on: ubuntu-latest
