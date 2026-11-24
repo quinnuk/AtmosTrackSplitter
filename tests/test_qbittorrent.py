@@ -103,7 +103,7 @@ class QbittorrentTests(unittest.TestCase):
             (root / "concert.iso").touch()
             disc = root / "disc" / "rip"
             (disc / "BDMV" / "PLAYLIST").mkdir(parents=True)
-            found = qbittorrent._candidate_sources(root)
+            found = qbittorrent._find_sources(root)
             self.assertIn(root / "concert.iso", found)
             self.assertIn(disc, found)
 
