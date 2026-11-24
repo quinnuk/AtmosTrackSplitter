@@ -54,7 +54,7 @@ th{color:var(--dim);font-weight:500;font-size:12px}td.n{width:34px;color:var(--d
  <div class="panel" style="margin-top:12px"><h2>Progress</h2><div id="log" class="dim">Nothing running.</div><div id="jobErr" class="err"></div></div>
 </section></main>
 <script>
-const $=id=>document.getElementById(id);let state={scan:null,resolve:null,job:null,timer:null};
+const $=id=>document.getElementById(id);let state={scan:null,resolve:null,selectedAlignment:null,job:null,timer:null};
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 async function api(url,body){const r=await fetch(url,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});let j={};try{j=await r.json()}catch(e){}if(!r.ok)throw new Error(j.error||('HTTP '+r.status));return j}
 async function init(){try{const c=await api('/api/config');const bad=Object.entries(c.tools).filter(([,v])=>!v).map(([k])=>k);$('tools').textContent=bad.length?'Missing tools: '+bad.join(', '):'Tools OK'+(c.has_discogs?' · Discogs on':'');}catch(e){$('tools').textContent='Login required or application unavailable';$('list').textContent=e.message;return}browse('')}
@@ -75,16 +75,16 @@ function renderScan(){const s=state.scan;$('discName').textContent=s.default_out
  $('rows').innerHTML=s.chapters.map(c=>`<tr id="r\${c.index}"><td class="n">\${c.index}</td><td class="t">\${c.start}</td><td class="t">\${c.length}</td><td><input class="name" id="n\${c.index}" value="\${esc(c.embedded_name)}" placeholder="Track \${String(c.index).padStart(2,'0')}"></td></tr>`).join('')}
 async function lookup(){if(!state.scan)return;const s=state.scan;$('status').innerHTML='<span class="dim">Looking up titles…</span>';$('alts').classList.add('hidden');
  try{const r=await api('/api/resolve',{path:s.path,playlist:s.playlist,sidecar_path:s.sidecar_path,artist:$('artist').value,album:$('album').value,year:$('year').value});state.resolve=r;renderResolve()}catch(e){$('status').innerHTML='<span class="err">'+esc(e.message)+'</span>'}}
-function renderResolve(){const r=state.resolve;const cls={review:'c-review',none:'c-none'}[r.status]||'c-review';
+function renderResolve(){const r=state.resolve;state.selectedAlignment=r.best||null;const cls={review:'c-review',none:'c-none'}[r.status]||'c-review';
  const txt={review:'Please review suggestions',none:'No match — type titles or edit the search'}[r.status]||'Please review suggestions';
  $('status').innerHTML=`<span class="chip \${cls}">\${txt}\${r.best?' · '+Math.round(r.best.confidence*100)+'% score':''}</span>`;
  const alts=$('alts');if(r.alternatives.length>1){alts.innerHTML=r.alternatives.map((a,i)=>`<option value="\${i}">\${Math.round(a.confidence*100)}% — \${esc(a.label)}</option>`).join('');alts.classList.remove('hidden')}
  if(r.best)applyAlignment(r.best);else $('notes').textContent=r.messages.slice(-2).join(' · ')}
-function useAlt(i){applyAlignment(state.resolve.alternatives[+i])}
+function useAlt(i){state.selectedAlignment=state.resolve.alternatives[+i];applyAlignment(state.selectedAlignment)}
 function applyAlignment(a){$('notes').textContent=a.label+(a.notes.length?' — '+a.notes.join('; '):'');
  for(const c of state.scan.chapters){const el=$('n'+c.index);const v=a.names[c.index];el.value=v||c.embedded_name||'';$('r'+c.index).classList.toggle('miss',!v)}}
 function names(){const o={};for(const c of state.scan.chapters){const v=$('n'+c.index).value.trim();if(v)o[c.index]=v}return o}
-async function start(){if(!state.scan)return;const r=state.resolve?.best||{};await run('/api/jobs',{path:state.scan.path,sidecar_path:state.scan.sidecar_path,album_name_hint:state.scan.album_name_hint,playlist:state.scan.playlist,names:names(),output_name:$('outname').value,overwrite:$('overwrite').checked,resume:$('resume').checked&&state.scan.resumable,artist:$('artist').value,album:$('album').value,year:$('year').value,release_id:r.release_id||''})}
+async function start(){if(!state.scan)return;const r=state.selectedAlignment||state.resolve?.best||{};await run('/api/jobs',{path:state.scan.path,sidecar_path:state.scan.sidecar_path,album_name_hint:state.scan.album_name_hint,playlist:state.scan.playlist,names:names(),output_name:$('outname').value,overwrite:$('overwrite').checked,resume:$('resume').checked&&state.scan.resumable,artist:$('artist').value,album:$('album').value,year:$('year').value,release_id:r.release_id||''})}
 async function run(url,body){$('jobErr').textContent='';$('log').textContent='';try{const j=await api(url,body);state.job=j.job_id;$('cancelBtn').classList.remove('hidden');poll()}catch(e){$('jobErr').textContent=e.message}}
 function poll(){clearTimeout(state.timer);state.timer=setTimeout(async()=>{try{const j=await api('/api/jobs/'+state.job);const l=$('log');l.textContent=j.log.join('\\n');l.scrollTop=l.scrollHeight;
  if(j.status==='running'){poll();return}$('cancelBtn').classList.add('hidden');
