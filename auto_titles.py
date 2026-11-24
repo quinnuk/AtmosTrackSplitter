@@ -36,6 +36,7 @@ class Candidate:
     label: str
     entries: list[TracklistEntry]
     trust_bonus: float = 0.0
+    release_id: str = ""
 
 
 @dataclass
@@ -48,6 +49,7 @@ class Alignment:
     total_chapters: int
     entry_count: int
     notes: list[str] = field(default_factory=list)
+    release_id: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -59,6 +61,7 @@ class Alignment:
             "total_chapters": self.total_chapters,
             "entry_count": self.entry_count,
             "notes": self.notes,
+            "release_id": self.release_id,
         }
 
 
@@ -156,7 +159,7 @@ def align_candidate(
     n, m = len(chapters), len(cand.entries)
     notes: list[str] = []
     if n == 0 or m == 0:
-        return Alignment(cand.source, cand.label, 0.0, {}, 0, n, m, ["Empty tracklist"])
+        return Alignment(cand.source, cand.label, 0.0, {}, 0, n, m, ["Empty tracklist"], cand.release_id)
 
     timed_entries = sum(1 for entry in cand.entries if entry.duration_seconds is not None)
     has_timing = timed_entries >= max(2, m // 2) and any(duration is not None for duration in durs)
@@ -175,14 +178,14 @@ def align_candidate(
             confidence = max(0.0, 0.85 - 0.12 * abs(n - m))
             notes.append(f"Tracklist has {m} entries but disc has {n} chapters; matched by position")
         confidence = min(1.0, confidence + cand.trust_bonus)
-        return Alignment(cand.source, cand.label, confidence, names, len(pairs), n, m, notes)
+        return Alignment(cand.source, cand.label, confidence, names, len(pairs), n, m, notes, cand.release_id)
 
     pairs = _dp_align(durs, cand.entries)
     for i, j, _ in pairs:
         names[chapters[i].index] = clean_title(cand.entries[j].name)
     matched = len(pairs)
     if matched == 0:
-        return Alignment(cand.source, cand.label, 0.0, {}, 0, n, m, ["Nothing lined up"])
+        return Alignment(cand.source, cand.label, 0.0, {}, 0, n, m, ["Nothing lined up"], cand.release_id)
 
     quality = sum(1.0 - min(cost, 1.0) for _, _, cost in pairs) / matched
     coverage = matched / n
@@ -198,7 +201,7 @@ def align_candidate(
         notes.append(f"{n - matched} chapter(s) had no matching song (intro/applause/bonus?)")
     if matched < m:
         notes.append(f"{m - matched} tracklist entr{'y' if m - matched == 1 else 'ies'} not found on this disc")
-    return Alignment(cand.source, cand.label, confidence, names, matched, n, m, notes)
+    return Alignment(cand.source, cand.label, confidence, names, matched, n, m, notes, cand.release_id)
 
 
 def read_disc_title(disc_folder: Path) -> str:
@@ -251,7 +254,11 @@ def build_hints(
     return hints
 
 
-def local_candidates(source_folder: Path, chapters: list[Chapter]) -> list[Candidate]:
+def local_candidates(
+    source_folder: Path,
+    chapters: list[Chapter],
+    sidecar_folder: Optional[Path] = None,
+) -> list[Candidate]:
     candidates: list[Candidate] = []
 
     embedded = [ch.embedded_name for ch in chapters]
@@ -266,13 +273,21 @@ def local_candidates(source_folder: Path, chapters: list[Chapter]) -> list[Candi
         ]
         candidates.append(Candidate("embedded", "Names embedded in the disc's chapters", entries, 0.08))
 
-    for sidecar in extractor.find_sidecar_tracklist_files(source_folder):
-        try:
+    folders = [source_folder]
+    if sidecar_folder is not None and sidecar_folder != source_folder:
+        folders.append(sidecar_folder)
+    seen: set[Path] = set()
+    for folder in folders:
+        for sidecar in extractor.find_sidecar_tracklist_files(folder):
+            if sidecar in seen:
+                continue
+            seen.add(sidecar)
+            try:
             entries = extractor.load_sidecar_tracklist(sidecar)
-        except ValueError:
-            continue
-        if len(entries) >= 2:
-            candidates.append(Candidate("sidecar", f"File: {sidecar.name}", entries, 0.05))
+            except ValueError:
+                continue
+            if len(entries) >= 2:
+                candidates.append(Candidate("sidecar", f"File: {sidecar.name}", entries, 0.05))
     return candidates
 
 
@@ -356,7 +371,7 @@ def _mb_candidates(
                     f"MusicBrainz: {credit} - {release.get('title', '')} "
                     f"({release.get('date', '?')}) - {fmt} {medium_index}, {len(entries)} tracks"
                 )
-                candidates.append(Candidate("musicbrainz", label, entries))
+                candidates.append(Candidate("musicbrainz", label, entries, 0.0, release_id))
     return candidates
 
 
@@ -401,6 +416,7 @@ def resolve_titles(
     override: Optional[tuple[str, str, Optional[int]]] = None,
     offline: bool = False,
     log: Optional[Callable[[str], None]] = None,
+    sidecar_folder: Optional[Path] = None,
 ) -> ResolveResult:
     messages: list[str] = []
 
@@ -425,7 +441,7 @@ def resolve_titles(
         best = alignments[0]
         return best.source in ("musicbrainz", "discogs") and "no usable track durations" not in " ".join(best.notes).lower()
 
-    local = local_candidates(source_folder, chapters)
+    local = local_candidates(source_folder, chapters, sidecar_folder)
     if local:
         say(f"Found {len(local)} local tracklist source(s)")
     score(local)
