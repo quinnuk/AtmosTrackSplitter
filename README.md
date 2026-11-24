@@ -108,34 +108,53 @@ The optional Flask edition runs the existing Atmos Track Splitter extraction
 engine in a lightweight Debian 13 container and provides a browser interface.
 It does not replace or alter the Windows desktop application.
 
-### Current behaviour
+### Workflow
 
-- Browse the read-only rip directory and select a folder containing
-  `BDMV/PLAYLIST/*.mpls`.
-- Scan and score the disc's Atmos playlists.
-- Automatically suggest chapter titles from embedded names, local sidecars,
-  MusicBrainz and (when configured) Discogs.
-- Align timed tracklists against chapter durations, so a spoken introduction,
-  applause or an extra encore need not shift all subsequent names.
-- Review and edit the suggested titles before explicitly starting a split.
-  Unattended splitting is deliberately disabled while the title resolver is
-  being validated against real discs.
-- Use the existing MKVToolNix/FFmpeg stream-copy pipeline, including its
-  cancellation and resumable-job support.
+- Browse the read-only rip directory or select completed downloads from the
+  configured qBittorrent category (normally `audio-bluray`).
+- Completed torrents are queried through the qBittorrent Web API. The app
+  reads torrent state and content paths only; it does not pause, rename, move,
+  delete or otherwise change torrents.
+- Ripped BDMV folders are scanned directly. Blu-ray ISO files are read with
+  Debian's 7-Zip command-line tool and their BDMV tree is copied to a separate
+  staging directory. No loop mounting or privileged-container mode is used.
+- Automatic title suggestions use embedded chapter names, local sidecars,
+  MusicBrainz and (when configured) Discogs. Timed tracklists are aligned
+  against chapter durations, allowing an intro, applause or an extra encore
+  without shifting every subsequent title.
+- Suggested titles are always presented for review. Unattended splitting is
+  disabled in this browser edition.
+- Extraction uses the existing MKVToolNix/FFmpeg stream-copy pipeline,
+  including cancellation and resumable-job support.
+- On successful splitting the app creates a square Plex-compatible
+  `folder.jpg` (1000 x 1000) from local cover art or the selected
+  MusicBrainz release's Cover Art Archive image. Existing artwork is not
+  overwritten.
 
-The browser edition currently accepts ripped BDMV folders. qBittorrent
-completed-download discovery, ISO input and Plex folder artwork are planned
-follow-on additions; they are not yet part of this initial Flask import.
+The original download folder is mounted read-only so qBittorrent can continue
+seeding. ISO staging is kept after an interrupted job to allow recovery and
+removed after a successful split.
 
 ### Dell Docker setup
 
-Copy `.env.example` to `.env`, set the web login, and check that the paths
-match the host:
+Copy `.env.example` to `.env`, set a strong browser password, and check all
+host paths and qBittorrent connection details:
 
-- `RIPS_DIR=/data/torrents/audio-bluray` — source rips, mounted read-only.
-- `OUTPUT_DIR=/data/media/music-videos` — Plex Music Videos destination.
-- `STAGING_DIR=/data/torrents/audio-bluray-staging` — reserved writable
-  workspace for the planned ISO support.
+- `RIPS_DIR=/data/torrents/audio-bluray` — host folder for the dedicated
+  category, mounted read-only.
+- `OUTPUT_DIR=/data/media/music-videos` — existing Plex Music Videos
+  destination.
+- `STAGING_DIR=/data/torrents/audio-bluray-staging` — writable temporary
+  space for ISO preparation. Allow free space roughly equal to the ISO size
+  plus 512 MiB.
+- `QBITTORRENT_URL` — qBittorrent Web UI address reachable from this
+  container, not `localhost` unless qBittorrent shares the container's
+  network namespace.
+- `QBITTORRENT_USERNAME` and `QBITTORRENT_PASSWORD` — the Web UI login.
+- `QBITTORRENT_CATEGORY=audio-bluray` — the category to query.
+- `QBITTORRENT_CONTENT_ROOT` — absolute category path **as qBittorrent sees
+  it inside its own container**. This is not the host path mounted at
+  `RIPS_DIR`; set it to the matching internal path.
 - `AUTH_USERNAME` and `AUTH_PASSWORD` — required browser login.
 - `PUID` and `PGID` — set these to the account that owns the destination
   directories (check with `id -u && id -g`).
@@ -148,14 +167,19 @@ docker compose up -d --build
 ```
 
 Open `http://DELL-SERVER-IP:8765` and sign in with the configured login.
-The app also offers a health endpoint at `/healthz`. The browser login uses
-HTTP Basic authentication; do not port-forward this service or expose it to
-the public internet. For remote access, use a private encrypted route such
-as Tailscale or put it behind a properly configured HTTPS reverse proxy.
+The app also offers a health endpoint at `/healthz`. Basic authentication
+does not encrypt HTTP traffic: keep access on your trusted home network and
+do not port-forward this service to the public internet. For remote access,
+use a private encrypted route such as Tailscale.
 
 The container uses one Gunicorn worker because job state is held in memory.
-The rip mount is read-only; only the output, configuration and staging mounts
-are writable.
+The rip mount is read-only; only output, configuration and staging mounts are
+writable.
+
+**Validation note:** unit tests cover qBittorrent API handling, path mapping,
+BDMV discovery, simulated ISO staging, title matching and the browser routes.
+The Docker image is built in CI. A real Blu-ray ISO and a real qBittorrent
+container still need end-to-end testing on the Dell before production use.
 
 ## Building a standalone .exe
 
