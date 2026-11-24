@@ -14,6 +14,8 @@ import qbittorrent
 class _FakeQbittorrentHandler(BaseHTTPRequestHandler):
     observed_referer = ""
     observed_query = {}
+    login_status = 200
+    login_body = b"Ok."
 
     def log_message(self, *_args):
         pass
@@ -23,10 +25,11 @@ class _FakeQbittorrentHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         body = parse_qs(self.rfile.read(length).decode("utf-8"))
         if self.path == "/api/v2/auth/login" and body.get("username") == ["test"] and body.get("password") == ["secret"]:
-            self.send_response(200)
+            self.send_response(self.__class__.login_status)
             self.send_header("Set-Cookie", "SID=test-session; Path=/")
             self.end_headers()
-            self.wfile.write(b"Ok.")
+            if self.__class__.login_body:
+                self.wfile.write(self.__class__.login_body)
             return
         self.send_error(403)
 
@@ -87,6 +90,39 @@ class QbittorrentTests(unittest.TestCase):
             self.assertEqual(_FakeQbittorrentHandler.observed_query.get("filter"), ["completed"])
             self.assertEqual(_FakeQbittorrentHandler.observed_query.get("category"), ["audio-bluray"])
             self.assertEqual(_FakeQbittorrentHandler.observed_referer, url + "/")
+
+    def test_qbittorrent_52_empty_204_login_response_is_accepted(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            disc = root / "Test Artist - Test Album" / "Disc 1"
+            playlist = disc / "BDMV" / "PLAYLIST"
+            playlist.mkdir(parents=True)
+            (playlist / "00000.mpls").write_bytes(b"test")
+
+            _FakeQbittorrentHandler.login_status = 204
+            _FakeQbittorrentHandler.login_body = b""
+            server = HTTPServer(("127.0.0.1", 0), _FakeQbittorrentHandler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                url = f"http://127.0.0.1:{server.server_port}"
+                result = qbittorrent.list_completed_disc_downloads(
+                    base_url=url,
+                    username="test",
+                    password="secret",
+                    category="audio-bluray",
+                    content_root="/downloads/audio-bluray",
+                    local_root=root,
+                )
+            finally:
+                server.shutdown()
+                thread.join(timeout=2)
+                server.server_close()
+                _FakeQbittorrentHandler.login_status = 200
+                _FakeQbittorrentHandler.login_body = b"Ok."
+
+            self.assertEqual(len(result), 1)
+            self.assertEqual(result[0].source_path, disc)
 
     def test_content_path_cannot_escape_mapped_root(self):
         with tempfile.TemporaryDirectory() as temp:
