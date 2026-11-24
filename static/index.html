@@ -59,8 +59,8 @@ const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',
 async function api(url,body){const r=await fetch(url,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});let j={};try{j=await r.json()}catch(e){}if(!r.ok)throw new Error(j.error||('HTTP '+r.status));return j}
 async function init(){try{const c=await api('/api/config');const bad=Object.entries(c.tools).filter(([,v])=>!v).map(([k])=>k);$('tools').textContent=bad.length?'Missing tools: '+bad.join(', '):'Tools OK'+(c.has_discogs?' · Discogs on':'');}catch(e){$('tools').textContent='Login required or application unavailable';$('list').textContent=e.message;return}browse('')}
 async function browse(p){try{const d=await api('/api/browse?path='+encodeURIComponent(p||''));$('crumb').textContent=d.path;let h='';
- if(d.parent)h+=`<div class="entry" data-p="\${esc(d.parent)}">⬆ ..</div>`;
- for(const e of d.entries)h+=`<div class="entry" data-p="\${esc(e.path)}" data-d="\${e.is_disc?1:0}"><span>\${e.is_disc?'💿':'📁'} \${esc(e.name)}</span>\${e.is_disc?'<span class="badge">disc</span>':''}</div>`;
+ if(d.parent)h+=`<div class="entry" data-p="${esc(d.parent)}">⬆ ..</div>`;
+ for(const e of d.entries)h+=`<div class="entry" data-p="${esc(e.path)}" data-d="${e.is_disc?1:0}"><span>${e.is_disc?'💿':'📁'} ${esc(e.name)}</span>${e.is_disc?'<span class="badge">disc</span>':''}</div>`;
  $('list').innerHTML=h||'<span class="dim">Empty</span>';
  $('list').querySelectorAll('.entry').forEach(el=>el.onclick=()=>el.dataset.d==='1'?selectDisc(el.dataset.p):browse(el.dataset.p));
  if(d.is_disc)selectDisc(d.path)}catch(e){$('list').innerHTML='<span class="err">'+esc(e.message)+'</span>'}}
@@ -68,17 +68,17 @@ async function selectDisc(path,pl,meta={}){$('jobErr').textContent='';$('status'
  try{const s=await api('/api/scan',{path,playlist:pl,sidecar_path:meta.sidecar_path||path,album_name_hint:meta.album_name_hint||''});state.scan=s;renderScan();await lookup()}catch(e){$('status').innerHTML='<span class="err">'+esc(e.message)+'</span>'}}
 function rescan(pl){selectDisc(state.scan.path,pl)}
 function renderScan(){const s=state.scan;$('discName').textContent=s.default_output;$('chap').classList.remove('hidden');
- $('playlist').innerHTML=s.playlists.map(p=>`<option value="\${p.file}" \${p.file===s.playlist?'selected':''}>\${p.file} — \${p.chapters} ch, \${p.minutes} min</option>`).join('');
+ $('playlist').innerHTML=s.playlists.map(p=>`<option value="${p.file}" ${p.file===s.playlist?'selected':''}>${p.file} — ${p.chapters} ch, ${p.minutes} min</option>`).join('');
  $('plInfo').textContent=(s.playlists.find(p=>p.file===s.playlist)||{}).reasons?.slice(0,2).join(' · ')||'';
  $('artist').value=s.guess.artist||'';$('album').value=s.guess.album||'';$('year').value=s.guess.year||'';$('outname').value=s.default_output;
  $('resumeWrap').classList.toggle('hidden',!s.resumable);
- $('rows').innerHTML=s.chapters.map(c=>`<tr id="r\${c.index}"><td class="n">\${c.index}</td><td class="t">\${c.start}</td><td class="t">\${c.length}</td><td><input class="name" id="n\${c.index}" value="\${esc(c.embedded_name)}" placeholder="Track \${String(c.index).padStart(2,'0')}"></td></tr>`).join('')}
+ $('rows').innerHTML=s.chapters.map(c=>`<tr id="r${c.index}"><td class="n">${c.index}</td><td class="t">${c.start}</td><td class="t">${c.length}</td><td><input class="name" id="n${c.index}" value="${esc(c.embedded_name)}" placeholder="Track ${String(c.index).padStart(2,'0')}"></td></tr>`).join('')}
 async function lookup(){if(!state.scan)return;const s=state.scan;$('status').innerHTML='<span class="dim">Looking up titles…</span>';$('alts').classList.add('hidden');
  try{const r=await api('/api/resolve',{path:s.path,playlist:s.playlist,sidecar_path:s.sidecar_path,artist:$('artist').value,album:$('album').value,year:$('year').value});state.resolve=r;renderResolve()}catch(e){$('status').innerHTML='<span class="err">'+esc(e.message)+'</span>'}}
 function renderResolve(){const r=state.resolve;state.selectedAlignment=r.best||null;const cls={review:'c-review',none:'c-none'}[r.status]||'c-review';
  const txt={review:'Please review suggestions',none:'No match — type titles or edit the search'}[r.status]||'Please review suggestions';
- $('status').innerHTML=`<span class="chip \${cls}">\${txt}\${r.best?' · '+Math.round(r.best.confidence*100)+'% score':''}</span>`;
- const alts=$('alts');if(r.alternatives.length>1){alts.innerHTML=r.alternatives.map((a,i)=>`<option value="\${i}">\${Math.round(a.confidence*100)}% — \${esc(a.label)}</option>`).join('');alts.classList.remove('hidden')}
+ $('status').innerHTML=`<span class="chip ${cls}">${txt}${r.best?' · '+Math.round(r.best.confidence*100)+'% score':''}</span>`;
+ const alts=$('alts');if(r.alternatives.length>1){alts.innerHTML=r.alternatives.map((a,i)=>`<option value="${i}">${Math.round(a.confidence*100)}% — ${esc(a.label)}</option>`).join('');alts.classList.remove('hidden')}
  if(r.best)applyAlignment(r.best);else $('notes').textContent=r.messages.slice(-2).join(' · ')}
 function useAlt(i){state.selectedAlignment=state.resolve.alternatives[+i];applyAlignment(state.selectedAlignment)}
 function applyAlignment(a){$('notes').textContent=a.label+(a.notes.length?' — '+a.notes.join('; '):'');
