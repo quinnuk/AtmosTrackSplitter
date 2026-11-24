@@ -41,6 +41,12 @@ def test_application_requires_basic_authentication():
     assert "Basic" in response.headers["WWW-Authenticate"]
 
 
+def test_explicit_lan_mode_allows_browser_use_without_credentials():
+    with patch.object(webapp, "AUTH_DISABLED", True):
+        response = client.get("/api/config")
+    assert response.status_code == 200
+
+
 def test_authenticated_browse_and_path_jail():
     response = client.get("/api/browse", headers=_HEADERS)
     assert response.status_code == 200
