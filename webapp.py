@@ -20,9 +20,13 @@ from flask import Flask, jsonify, request, send_from_directory
 import auto_titles
 import extractor
 import settings
+import qbittorrent
+import iso_support
+import poster_art
 
 RIPS_ROOT = Path(os.environ.get("RIPS_DIR", "/rips")).resolve()
 OUTPUT_ROOT = Path(os.environ.get("OUTPUT_DIR", "/output")).resolve()
+STAGING_ROOT = Path(os.environ.get("STAGING_DIR", "/staging")).resolve()
 AUTH_USERNAME = os.environ.get("AUTH_USERNAME", "").strip()
 AUTH_PASSWORD = os.environ.get("AUTH_PASSWORD", "")
 
@@ -39,13 +43,34 @@ def _inside(path: Path, root: Path) -> bool:
     return path == root or root in path.parents
 
 
-def _disc_path(raw: str) -> Path:
+def _disc_path(raw: str, allow_staging: bool = False) -> Path:
     value = str(raw or "").strip()
     candidate = Path(value).expanduser()
     p = (candidate if candidate.is_absolute() else RIPS_ROOT / candidate).resolve()
-    if not _inside(p, RIPS_ROOT) or not p.is_dir():
-        raise ValueError("Folder is outside the read-only rips directory or doesn't exist")
+    allowed = _inside(p, RIPS_ROOT) or (allow_staging and _inside(p, STAGING_ROOT))
+    if not allowed or not p.is_dir():
+        raise ValueError("Folder is outside the permitted read-only rips or staging directories")
     return p
+
+
+def _rips_source_file(raw: str) -> Path:
+    value = str(raw or "").strip()
+    candidate = Path(value).expanduser()
+    p = (candidate if candidate.is_absolute() else RIPS_ROOT / candidate).resolve()
+    if not _inside(p, RIPS_ROOT) or not p.is_file():
+        raise ValueError("Source file is outside the read-only rips directory or doesn't exist")
+    return p
+
+
+def _sidecar_folder(raw: str | None, fallback: Path) -> Path:
+    if not raw:
+        return fallback
+    return _disc_path(raw, allow_staging=True)
+
+
+def _album_label(path: Path, hint: str = "") -> str:
+    label = Path(hint).name if hint.strip() else path.name
+    return extractor.derive_album_folder_name(Path(label))
 
 
 def _discogs_token() -> str:
@@ -140,9 +165,53 @@ def api_config():
         rips_root=str(RIPS_ROOT),
         output_root=str(OUTPUT_ROOT),
         has_discogs=bool(_discogs_token()),
+        has_qbittorrent=bool(os.environ.get("QBITTORRENT_URL")),
         tools=extractor.check_tools(),
         unattended_splitting=False,
     )
+
+
+@app.get("/api/completed-downloads")
+def api_completed_downloads():
+    try:
+        downloads = qbittorrent.list_completed_disc_downloads()
+    except Exception as exc:
+        return _err(str(exc), 502)
+    return jsonify(downloads=[
+        {
+            "name": item.name,
+            "kind": item.kind,
+            "path": str(item.source_path),
+            "download_root": str(item.download_root),
+            "torrent_hash": item.torrent_hash,
+            "size_bytes": item.size_bytes,
+        }
+        for item in downloads
+    ])
+
+
+@app.post("/api/select-download")
+def api_select_download():
+    data = request.get_json(silent=True) or {}
+    try:
+        source = _rips_source_file(data.get("path", "")) if str(data.get("path", "")).lower().endswith(".iso") else _disc_path(data.get("path", ""))
+        root = _disc_path(data.get("download_root", str(source.parent)))
+        album_hint = str(data.get("name") or source.stem if source.is_file() else source.name).strip()
+
+        if source.is_file() and source.suffix.lower() == ".iso":
+            disc = iso_support.prepare_iso(source, STAGING_ROOT)
+        else:
+            disc = iso_support.find_disc_folder(source)
+            if disc is None:
+                raise ValueError("No BDMV/PLAYLIST folder found in this completed download.")
+        return jsonify(
+            path=str(disc),
+            sidecar_path=str(root),
+            album_name_hint=album_hint,
+            is_iso=source.suffix.lower() == ".iso",
+        )
+    except (ValueError, RuntimeError, OSError) as exc:
+        return _err(str(exc))
 
 
 @app.get("/api/browse")
@@ -179,7 +248,12 @@ def api_settings():
     return jsonify(ok=True, has_discogs=bool(_discogs_token()))
 
 
-def _scan(path: Path, playlist_file: str | None = None) -> dict:
+def _scan(
+    path: Path,
+    playlist_file: str | None = None,
+    sidecar_path: Path | None = None,
+    album_name_hint: str = "",
+) -> dict:
     playlists = extractor.scan_disc_folder(path)
     if not playlists:
         raise ValueError("No BDMV/PLAYLIST/*.mpls found - is this an unmodified disc rip folder?")
@@ -191,11 +265,16 @@ def _scan(path: Path, playlist_file: str | None = None) -> dict:
     pl, chapters = _load_playlist(path, chosen.playlist.path.name)
 
     durations = auto_titles.chapter_durations(chapters, pl.duration_seconds)
-    album = extractor.derive_album_folder_name(path)
+    album = _album_label(path, album_name_hint)
     out_dir = _output_dir(album)
+    naming_source = Path(album_name_hint) if album_name_hint else path
+    guess = extractor.guess_artist_album_year(naming_source)
+    local_root = sidecar_path or path
     manifest = extractor.read_manifest(out_dir / "_work")
     return {
         "path": str(path),
+        "sidecar_path": str(local_root),
+        "album_name_hint": album_name_hint,
         "playlist": pl.path.name,
         "playlists": [
             {
@@ -223,11 +302,18 @@ def _scan(path: Path, playlist_file: str | None = None) -> dict:
         "resumable": bool(
             manifest and manifest.status in ("cancelled", "failed", "extracting", "splitting")
         ),
-        "guess": dict(zip(("artist", "album", "year"), extractor.guess_artist_album_year(path))),
+        "guess": dict(zip(("artist", "album", "year"), guess)),
     }
 
 
-def _resolve(path: Path, playlist_file: str, override=None, offline=False, log=None) -> dict:
+def _resolve(
+    path: Path,
+    playlist_file: str,
+    override=None,
+    offline=False,
+    log=None,
+    sidecar_folder: Path | None = None,
+) -> dict:
     playlist, chapters = _load_playlist(path, playlist_file)
     result = auto_titles.resolve_titles(
         path,
@@ -238,6 +324,7 @@ def _resolve(path: Path, playlist_file: str, override=None, offline=False, log=N
         override=override,
         offline=offline,
         log=log,
+        sidecar_folder=sidecar_folder,
     )
     return result.to_dict()
 
@@ -246,7 +333,12 @@ def _resolve(path: Path, playlist_file: str, override=None, offline=False, log=N
 def api_scan():
     data = request.get_json(silent=True) or {}
     try:
-        return jsonify(_scan(_disc_path(data.get("path", "")), data.get("playlist")))
+        return jsonify(_scan(
+            _disc_path(data.get("path", ""), allow_staging=True),
+            data.get("playlist"),
+            _sidecar_folder(data.get("sidecar_path"), _disc_path(data.get("path", ""), allow_staging=True)),
+            str(data.get("album_name_hint") or ""),
+        ))
     except (ValueError, RuntimeError, OSError) as exc:
         return _err(str(exc))
 
@@ -255,13 +347,17 @@ def api_scan():
 def api_resolve():
     data = request.get_json(silent=True) or {}
     try:
-        path = _disc_path(data.get("path", ""))
+        path = _disc_path(data.get("path", ""), allow_staging=True)
+        sidecar_folder = _sidecar_folder(data.get("sidecar_path"), path)
         playlist = str(data["playlist"])
         override = None
         if data.get("artist") or data.get("album"):
             year = int(data["year"]) if str(data.get("year") or "").isdigit() else None
             override = (str(data.get("artist", "")), str(data.get("album", "")), year)
-        return jsonify(_resolve(path, playlist, override, bool(data.get("offline"))))
+        return jsonify(_resolve(
+            path, playlist, override, bool(data.get("offline")),
+            sidecar_folder=sidecar_folder,
+        ))
     except (ValueError, RuntimeError, KeyError, OSError) as exc:
         return _err(str(exc))
 
@@ -294,6 +390,11 @@ def _start_pipeline(
     output_name: str,
     overwrite: bool,
     resume: bool,
+    sidecar_folder: Path,
+    artist: str,
+    album: str,
+    year: str,
+    release_id: str,
 ) -> bool:
     """Runs inside a job thread. Returns False if it stopped for user input."""
     playlist, chapters = _load_playlist(path, playlist_file)
@@ -323,6 +424,26 @@ def _start_pipeline(
         log_path=out_dir / "extraction.log",
     )
     job["outputs"] = [str(result) for result in results]
+    try:
+        artwork = poster_art.create_album_poster(
+            sidecar_folder if sidecar_folder.is_dir() else path,
+            out_dir,
+            artist,
+            album,
+            year,
+            musicbrainz_release_id=release_id,
+        )
+        if artwork is not None:
+            _jlog(job, f"Plex artwork saved as {artwork.name} (1000 x 1000).")
+        else:
+            _jlog(job, "No verified front-cover image found; artwork skipped.")
+    except Exception as exc:
+        _jlog(job, f"Tracks split successfully, but artwork creation failed: {exc}")
+
+    # Only remove a deterministic ISO staging folder after a successful split.
+    if path.parent == STAGING_ROOT and path.is_dir():
+        shutil.rmtree(path, ignore_errors=True)
+        _jlog(job, "Temporary ISO staging files removed.")
     return True
 
 
@@ -345,7 +466,8 @@ def _thread(job: dict, fn) -> None:
 def api_start_job():
     data = request.get_json(silent=True) or {}
     try:
-        path = _disc_path(data.get("path", ""))
+        path = _disc_path(data.get("path", ""), allow_staging=True)
+        sidecar_folder = _sidecar_folder(data.get("sidecar_path"), path)
         playlist_file = str(data["playlist"])
         _load_playlist(path, playlist_file)
         names = {
@@ -353,8 +475,12 @@ def api_start_job():
             for key, value in (data.get("names") or {}).items()
             if str(value).strip()
         }
-        output_name = str(data.get("output_name") or extractor.derive_album_folder_name(path))
+        output_name = str(data.get("output_name") or _album_label(path, str(data.get("album_name_hint") or "")))
         _output_dir(output_name)
+        artist = str(data.get("artist") or "")
+        album = str(data.get("album") or "")
+        year = str(data.get("year") or "")
+        release_id = str(data.get("release_id") or "")
     except (ValueError, RuntimeError, KeyError, OSError, TypeError) as exc:
         return _err(str(exc))
 
@@ -369,6 +495,11 @@ def api_start_job():
             output_name,
             bool(data.get("overwrite")),
             bool(data.get("resume")),
+            sidecar_folder,
+            artist,
+            album,
+            year,
+            release_id,
         ),
     )
     return jsonify(job_id=job["id"])
