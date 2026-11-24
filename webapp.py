@@ -2,7 +2,8 @@
 Browser front-end for Atmos Track Splitter (Debian Docker edition).
 
 The Flask app reuses the repository's existing extraction engine. Browser
-users must authenticate; the source directory is read-only in Docker.
+authentication can be disabled for a trusted, LAN-only deployment; the source
+directory is read-only in Docker.
 """
 
 from __future__ import annotations
@@ -29,6 +30,9 @@ OUTPUT_ROOT = Path(os.environ.get("OUTPUT_DIR", "/output")).resolve()
 STAGING_ROOT = Path(os.environ.get("STAGING_DIR", "/staging")).resolve()
 AUTH_USERNAME = os.environ.get("AUTH_USERNAME", "").strip()
 AUTH_PASSWORD = os.environ.get("AUTH_PASSWORD", "")
+AUTH_DISABLED = os.environ.get("AUTH_DISABLED", "false").strip().lower() in {
+    "1", "true", "yes", "on",
+}
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
 app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024
@@ -96,7 +100,7 @@ def _err(message: str, code: int = 400):
 @app.before_request
 def _require_authentication():
     # Health checks reveal no application or filesystem information.
-    if request.endpoint == "healthz":
+    if request.endpoint == "healthz" or AUTH_DISABLED:
         return None
     if not AUTH_USERNAME or not AUTH_PASSWORD:
         return _err("Application login is not configured. Set AUTH_USERNAME and AUTH_PASSWORD.", 503)
@@ -545,6 +549,9 @@ def api_cancel(job_id: str):
 
 
 if __name__ == "__main__":
-    if not AUTH_USERNAME or not AUTH_PASSWORD:
-        raise SystemExit("Set AUTH_USERNAME and AUTH_PASSWORD before starting the web application.")
+    if not AUTH_DISABLED and (not AUTH_USERNAME or not AUTH_PASSWORD):
+        raise SystemExit(
+            "Set AUTH_USERNAME and AUTH_PASSWORD, or explicitly set AUTH_DISABLED=true "
+            "for a trusted LAN-only deployment."
+        )
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8765")))
