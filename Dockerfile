@@ -10,12 +10,25 @@ ENV PYTHONUNBUFFERED=1 \
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      7zip \
       ca-certificates \
       ffmpeg \
       mkvtoolnix \
+      tar \
       tini \
+      xz-utils \
  && rm -rf /var/lib/apt/lists/*
+
+# Debian 13 currently packages 7-Zip 25.01, which cannot read some Blu-ray
+# UDF 2.50 images containing real-time (ICB file type 249) stream files.
+# Use the official upstream Linux binary containing the Blu-ray UDF fix.
+ADD --checksum=sha256:2b539cf067b2ad48e1baa5093dbaa8818b73542d1222a0ffde9dc5f2922ea62e \
+    https://github.com/ip7z/7zip/releases/download/26.06/7z2606-linux-x64.tar.xz \
+    /tmp/7zip.tar.xz
+RUN mkdir -p /tmp/7zip \
+ && tar -xJf /tmp/7zip.tar.xz -C /tmp/7zip \
+ && install -m 0755 /tmp/7zip/7zz /usr/local/bin/7z \
+ && /usr/local/bin/7z i | grep -q '26.06' \
+ && rm -rf /tmp/7zip /tmp/7zip.tar.xz
 
 WORKDIR /app
 COPY requirements-docker.txt ./
