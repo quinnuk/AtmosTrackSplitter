@@ -283,7 +283,7 @@ def local_candidates(
                 continue
             seen.add(sidecar)
             try:
-            entries = extractor.load_sidecar_tracklist(sidecar)
+                entries = extractor.load_sidecar_tracklist(sidecar)
             except ValueError:
                 continue
             if len(entries) >= 2:
