@@ -196,7 +196,7 @@ def api_select_download():
     try:
         source = _rips_source_file(data.get("path", "")) if str(data.get("path", "")).lower().endswith(".iso") else _disc_path(data.get("path", ""))
         root = _disc_path(data.get("download_root", str(source.parent)))
-        album_hint = str(data.get("name") or source.stem if source.is_file() else source.name).strip()
+        album_hint = str(data.get("name") or (source.stem if source.is_file() else source.name)).strip()
 
         if source.is_file() and source.suffix.lower() == ".iso":
             disc = iso_support.prepare_iso(source, STAGING_ROOT)
