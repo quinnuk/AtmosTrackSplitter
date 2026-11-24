@@ -126,10 +126,11 @@ It does not replace or alter the Windows desktop application.
   disabled in this browser edition.
 - Extraction uses the existing MKVToolNix/FFmpeg stream-copy pipeline,
   including cancellation and resumable-job support.
-- On successful splitting the app creates a square Plex-compatible
-  `folder.jpg` (1000 x 1000) from local cover art or the selected
-  MusicBrainz release's Cover Art Archive image. Existing artwork is not
-  overwritten.
+- On successful splitting the app creates a portrait Plex poster
+  `folder.jpg` (1000 x 1500, 2:3 aspect ratio) from local cover art or the
+  selected MusicBrainz release's Cover Art Archive image. The original cover
+  remains intact in the centre over a softly blurred background; it is not
+  stretched or cropped. Existing artwork is not overwritten.
 
 The original download folder is mounted read-only so qBittorrent can continue
 seeding. ISO staging is kept after an interrupted job to allow recovery and
