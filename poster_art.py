@@ -12,7 +12,7 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
-from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageOps
 
 POSTER_SIZE = (1000, 1500)
 USER_AGENT = "AtmosTrackSplitter/1.0 (+https://github.com/quinnuk/AtmosTrackSplitter)"
@@ -59,8 +59,12 @@ def fetch_musicbrainz_front_cover(release_id: str) -> Optional[bytes]:
     return payload
 
 
-def create_square_cover(source_image: bytes | Path, output_path: Path) -> Path:
-    """Create a 1000x1000 JPEG, matching Plex's square album-art convention."""
+def create_portrait_poster(source_image: bytes | Path, output_path: Path) -> Path:
+    """Create a 1000x1500 portrait JPEG without stretching or cropping the source cover.
+
+    A softly blurred, darkened full-bleed version of the cover fills the
+    portrait canvas. The original artwork is then placed intact in the centre.
+    """
     if isinstance(source_image, Path):
         image = Image.open(source_image)
     else:
@@ -68,10 +72,43 @@ def create_square_cover(source_image: bytes | Path, output_path: Path) -> Path:
     with image:
         cover = ImageOps.exif_transpose(image).convert("RGB")
         if cover.width < 100 or cover.height < 100:
-            raise ValueError("The album cover is too small to make a clean cover image.")
-        square = ImageOps.fit(cover, (1000, 1000), method=Image.Resampling.LANCZOS)
+            raise ValueError("The album cover is too small to make a clean poster image.")
+
+        # Fill the portrait canvas with a subdued, blurred crop while keeping
+        # the complete original artwork visible and undistorted in front.
+        background = ImageOps.fit(
+            cover, POSTER_SIZE, method=Image.Resampling.LANCZOS
+        ).filter(ImageFilter.GaussianBlur(radius=38))
+        background = ImageEnhance.Brightness(background).enhance(0.38)
+        poster = background.convert("RGBA")
+
+        foreground = ImageOps.contain(
+            cover, (900, 1200), method=Image.Resampling.LANCZOS
+        ).convert("RGBA")
+        x = (POSTER_SIZE[0] - foreground.width) // 2
+        y = (POSTER_SIZE[1] - foreground.height) // 2
+
+        shadow = Image.new("RGBA", POSTER_SIZE, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(shadow)
+        draw.rounded_rectangle(
+            (x - 12, y - 12, x + foreground.width + 12, y + foreground.height + 12),
+            radius=8,
+            fill=(0, 0, 0, 190),
+        )
+        shadow = shadow.filter(ImageFilter.GaussianBlur(radius=24))
+        poster = Image.alpha_composite(poster, shadow)
+
+        draw = ImageDraw.Draw(poster)
+        draw.rectangle(
+            (x - 2, y - 2, x + foreground.width + 1, y + foreground.height + 1),
+            fill=(238, 238, 238, 255),
+        )
+        poster.alpha_composite(foreground, (x, y))
+
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        square.save(output_path, format="JPEG", quality=94, optimize=True, subsampling=0)
+        poster.convert("RGB").save(
+            output_path, format="JPEG", quality=94, optimize=True, subsampling=0
+        )
     return output_path
 
 
@@ -83,7 +120,7 @@ def create_album_poster(
     year: str = "",
     musicbrainz_release_id: str = "",
 ) -> Optional[Path]:
-    """Create Plex-ready square album artwork as folder.jpg."""
+    """Create Plex-ready 2:3 portrait artwork as folder.jpg."""
     output_path = output_folder / "folder.jpg"
 
     # Never replace artwork that is already present in the destination.
@@ -97,5 +134,5 @@ def create_album_poster(
     if image_source is None:
         return None
 
-    create_square_cover(image_source, output_path)
+    create_portrait_poster(image_source, output_path)
     return output_path
